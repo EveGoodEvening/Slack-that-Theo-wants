@@ -38,7 +38,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
 | C3a   | done         | Verified: npm install, test (109 tests), build, lint, typecheck |
 | C4    | done         | Verified: npm install, test (163 tests), build, lint, typecheck |
 | C5    | done         | Verified: npm install, test (171 tests), build, lint, typecheck |
-| C6    | done         | Verified: npm install, test (189 tests), build, lint, typecheck |
+| C6    | done         | Verified: npm install, test (192 tests), build, lint, typecheck |
 | C7    | not started  | Depends on C1, C1a, C2, C3 |
 | C8    | not started  | Depends on C1a, C2, C3, C4, C5 (optionally C7) |
 | C9    | not started  | Depends on C1a, C2, C3, C4, C7 |
@@ -309,5 +309,5 @@ Rules (mirrored from `docs/implementation-plan.md`):
   fenced code highlighting, copy affordance, sanitized preview endpoint, and
   code-block CSS/scripts on top of the C3a renderer; preserved formatting in
   nested replies and kept code-block content escaped/sanitized. Orchestrator
-  verified `npm install`, `npm test` (189 tests), `npm run build`,
-  `npm run lint`, and `npm run typecheck` after test fixes. C6 is `done`.
+  verified `npm install`, `npm test` (192 tests), `npm run build`,
+  `npm run lint`, and `npm run typecheck` after test and review fixes. C6 is `done`.
