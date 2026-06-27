@@ -32,7 +32,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
 | ----- | ------------ | ----- |
 | C0    | done         | Verified: npm install, test, dev health route, build, lint, typecheck |
 | C1    | done         | Verified: npm test (30 tests), build, lint, typecheck after review fixes |
-| C1a   | not started  | Depends on C1; must land before C2/C3 expose endpoints |
+| C1a   | done         | Verified: npm install, test (65 tests), build, lint, typecheck |
 | C2    | not started  | Depends on C1, C1a |
 | C3    | not started  | Depends on C1, C1a |
 | C3a   | not started  | Depends on C0; prerequisite for C4/C5 |
@@ -68,11 +68,11 @@ Rules (mirrored from `docs/implementation-plan.md`):
 
 ## C1a — Security baseline: principal, membership, authorization middleware
 
-- [ ] Implement actor principal resolution from requests (stubbed auth mapping a request to an actor + workspace/group; real sign-in deferred to C9)
-- [ ] Implement baseline workspace/group membership model (enough to scope reads/writes; full membership lifecycle and invite/share deferred to C9)
-- [ ] Implement shared authorization middleware with per-endpoint read/write scope checks for workspace/group, reused by all C2/C3/C7/C8 surfaces
-- [ ] Provide reusable workspace/group scope and filtering helpers for later feed, event, agent, and status surfaces without exposing those surfaces in C1a
-- [ ] Add direct middleware/helper tests proving cross-workspace/group reads and writes are rejected and scoped collection filters exclude unauthorized human and stubbed-agent principals
+- [x] Implement actor principal resolution from requests (stubbed auth mapping a request to an actor + workspace/group; real sign-in deferred to C9) — implemented in src/security/principal.ts; stubbed x-actor-id/x-workspace-id headers validated against membership table; C9 replaces
+- [x] Implement baseline workspace/group membership model (enough to scope reads/writes; full membership lifecycle and invite/share deferred to C9) — migration 0002 workspace_member + auto-membership trigger; src/security/membership.ts
+- [x] Implement shared authorization middleware with per-endpoint read/write scope checks for workspace/group, reused by all C2/C3/C7/C8 surfaces — src/security/middleware.ts (authMiddleware/requireRole) + authorization.ts (assertCanRead/assertCanWrite)
+- [x] Provide reusable workspace/group scope and filtering helpers for later feed, event, agent, and status surfaces without exposing those surfaces in C1a — filterByScope/readableByScope/workspaceScopePredicate/authorizeWriteBatch in src/security/authorization.ts
+- [x] Add direct middleware/helper tests proving cross-workspace/group reads and writes are rejected and scoped collection filters exclude unauthorized human and stubbed-agent principals — src/security/security.test.ts verified by orchestrator
 
 ## C2 — Post feed API
 
@@ -244,3 +244,19 @@ Rules (mirrored from `docs/implementation-plan.md`):
 - 2026-06-27 — Chunk C1: review fixes verified — Orchestrator verified
   `npm test` (30 tests), `npm run build`, `npm run lint`, and
   `npm run typecheck` after tombstone-read fix; C1 remains `done`.
+- 2026-06-27 — Chunk C1a: not started -> in progress — Implementation
+  complete in worktree `chunk/C1a`. Added migration 0002 (`workspace_member`
+  table + auto-membership trigger) in src/db/migrations/0002-membership.ts;
+  security module under src/security/ (types, membership repository, stubbed
+  principal resolver, authorization helpers, Hono middleware, barrel index).
+  Reusable scope/filter helpers (filterByScope, readableByScope,
+  workspaceScopePredicate, authorizeWriteBatch, assertCanRead/assertCanWrite)
+  for C2/C3/C7/C8 surfaces. Direct tests in src/security/security.test.ts
+  cover cross-workspace read/write rejection through the middleware and
+  scoped filter include/exclude for human and stubbed-agent principals, plus
+  role enforcement and migration 0002 apply/rollback. Updated C1 test
+  migration assertions for the new migration. Initial gate run found Hono
+  middleware/type-only import issues; fixes are verified in the following entry.
+- 2026-06-27 — Chunk C1a: in progress -> done — Orchestrator verified
+  `npm install`, `npm test` (65 tests), `npm run build`, `npm run lint`, and
+  `npm run typecheck` after gate and review fixes; C1a remains `done`.
