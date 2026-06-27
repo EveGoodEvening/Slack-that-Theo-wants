@@ -32,7 +32,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
 | ----- | ------------ | ----- |
 | C0    | done         | Verified: npm install, test, dev health route, build, lint, typecheck |
 | C1    | done         | Verified: npm test (30 tests), build, lint, typecheck after review fixes |
-| C1a   | done         | Verified: npm install, test (63 tests), build, lint, typecheck |
+| C1a   | done         | Verified: npm install, test (65 tests), build, lint, typecheck |
 | C2    | not started  | Depends on C1, C1a |
 | C3    | not started  | Depends on C1, C1a |
 | C3a   | not started  | Depends on C0; prerequisite for C4/C5 |
@@ -258,5 +258,5 @@ Rules (mirrored from `docs/implementation-plan.md`):
   migration assertions for the new migration. Initial gate run found Hono
   middleware/type-only import issues; fixes are verified in the following entry.
 - 2026-06-27 — Chunk C1a: in progress -> done — Orchestrator verified
-  `npm install`, `npm test` (63 tests), `npm run build`, `npm run lint`, and
-  `npm run typecheck` after gate fixes; C1a remains `done`.
+  `npm install`, `npm test` (65 tests), `npm run build`, `npm run lint`, and
+  `npm run typecheck` after gate and review fixes; C1a remains `done`.

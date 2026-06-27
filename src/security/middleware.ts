@@ -25,8 +25,8 @@ export interface AuthVariables {
 
 /**
  * Map an AuthorizationError to an HTTP response. 401 for missing/unknown
- * principal, 403 for membership/role/workspace failures. Any other thrown error
- * surfaces as a 500 so authorization logic bugs are not silently swallowed.
+ * principal, 403 for membership/role/workspace failures. Non-authorization
+ * errors are rethrown so unrelated failures are not hidden.
  */
 export function authorizationErrorResponse(
   err: unknown,
@@ -37,10 +37,20 @@ export function authorizationErrorResponse(
       body: { error: err.message, code: err.code },
     };
   }
-  return {
-    status: 500,
-    body: { error: 'internal authorization error', code: 'internal' },
-  };
+  throw err;
+}
+
+/** Shared Hono onError mapper for downstream authorization failures. */
+export function authorizationErrorHandler(err: Error, c: Context): Response {
+  const { status, body } = authorizationErrorResponse(err);
+  return c.json(body, status);
+}
+
+/** Install the shared AuthorizationError mapper on a Hono app or route. */
+export function installAuthorizationErrorHandler(app: {
+  onError: (handler: (err: Error, c: Context) => Response) => unknown;
+}): void {
+  app.onError(authorizationErrorHandler);
 }
 
 /**
@@ -57,10 +67,14 @@ export function authMiddleware(
     try {
       principal = resolvePrincipal(c.req, membership);
     } catch (err) {
-      const { status, body } = authorizationErrorResponse(err);
-      return c.json(body, status);
+      if (err instanceof AuthorizationError) {
+        const { status, body } = authorizationErrorResponse(err);
+        return c.json(body, status);
+      }
+      throw err;
     }
     c.set('principal', principal);
+
     await next();
   };
 }
@@ -80,8 +94,11 @@ export function requireRole(
     try {
       principal = resolvePrincipal(c.req, membership);
     } catch (err) {
-      const { status, body } = authorizationErrorResponse(err);
-      return c.json(body, status);
+      if (err instanceof AuthorizationError) {
+        const { status, body } = authorizationErrorResponse(err);
+        return c.json(body, status);
+      }
+      throw err;
     }
 
     c.set('principal', principal);

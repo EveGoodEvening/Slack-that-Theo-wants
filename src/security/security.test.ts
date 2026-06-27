@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase } from '../db/connection.js';
 import {
@@ -19,6 +18,7 @@ import {
   filterByScope,
   hasRole,
   MembershipRepository,
+  installAuthorizationErrorHandler,
   PRINCIPAL_HEADERS,
   principalScope,
   readableByScope,
@@ -138,6 +138,13 @@ function principalFor(actorId: string, workspaceId: string): Principal {
   return resolvePrincipal(reqFor(actorId, workspaceId), membership);
 }
 
+/** Build a Hono app with the shared authorization error mapper installed. */
+function securityApp(): Hono<{ Variables: { principal: Principal } }> {
+  const app = new Hono<{ Variables: { principal: Principal } }>();
+  installAuthorizationErrorHandler(app);
+  return app;
+}
+
 // ---------------------------------------------------------------------------
 // Principal resolution
 // ---------------------------------------------------------------------------
@@ -146,7 +153,7 @@ describe('C1a principal resolution (stubbed)', () => {
   it('resolves a human principal from stubbed auth headers', async () => {
     const { humanA, wsA } = twoWorkspaceFixture();
     let captured: Principal | undefined;
-    const app = new Hono<{ Variables: { principal: Principal } }>();
+    const app = securityApp();
     app.use('*', authMiddleware(membership));
     app.get('/who', (c) => {
       captured = c.get('principal');
@@ -174,7 +181,7 @@ describe('C1a principal resolution (stubbed)', () => {
 
   it('rejects a request missing principal headers with 401 missing_principal', async () => {
     twoWorkspaceFixture();
-    const app = new Hono<{ Variables: { principal: Principal } }>();
+    const app = securityApp();
     app.use('*', authMiddleware(membership));
     app.get('/who', (c) => c.json({ ok: true }));
 
@@ -186,7 +193,7 @@ describe('C1a principal resolution (stubbed)', () => {
 
   it('rejects an unknown actor with 401 principal_not_found', async () => {
     const { wsA } = twoWorkspaceFixture();
-    const app = new Hono<{ Variables: { principal: Principal } }>();
+    const app = securityApp();
     app.use('*', authMiddleware(membership));
     app.get('/who', (c) => c.json({ ok: true }));
 
@@ -198,7 +205,7 @@ describe('C1a principal resolution (stubbed)', () => {
 
   it('rejects an actor that is not a member of the requested workspace with 401', async () => {
     const { humanA, wsB } = twoWorkspaceFixture();
-    const app = new Hono<{ Variables: { principal: Principal } }>();
+    const app = securityApp();
     app.use('*', authMiddleware(membership));
     app.get('/who', (c) => c.json({ ok: true }));
 
@@ -222,26 +229,16 @@ describe('C1a cross-workspace isolation via middleware', () => {
    * depending on those surfaces.
    */
   function guardedApp() {
-    const app = new Hono<{ Variables: { principal: Principal } }>();
+    const app = securityApp();
     app.use('*', authMiddleware(membership));
     app.get('/ws/:workspaceId/read', (c) => {
       const p = c.get('principal');
-      try {
-        assertCanRead(p, c.req.param('workspaceId'));
-      } catch (err) {
-        const ae = err as AuthorizationError;
-        return c.json({ error: ae.message, code: ae.code }, ae.status as ContentfulStatusCode);
-      }
+      assertCanRead(p, c.req.param('workspaceId'));
       return c.json({ ok: true, workspaceId: c.req.param('workspaceId') });
     });
     app.post('/ws/:workspaceId/write', (c) => {
       const p = c.get('principal');
-      try {
-        assertCanWrite(p, c.req.param('workspaceId'));
-      } catch (err) {
-        const ae = err as AuthorizationError;
-        return c.json({ error: ae.message, code: ae.code }, ae.status as ContentfulStatusCode);
-      }
+      assertCanWrite(p, c.req.param('workspaceId'));
       return c.json({ ok: true, workspaceId: c.req.param('workspaceId') });
     });
     return app;
@@ -322,24 +319,14 @@ describe('C1a role enforcement', () => {
     // Downgrade humanA to read-only membership.
     membership.setMembership(wsA.id, humanA.id, 'read');
 
-    const app = new Hono<{ Variables: { principal: Principal } }>();
+    const app = securityApp();
     app.use('*', authMiddleware(membership));
     app.get('/ws/:workspaceId/read', (c) => {
-      try {
-        assertCanRead(c.get('principal'), c.req.param('workspaceId'));
-      } catch (err) {
-        const ae = err as AuthorizationError;
-        return c.json({ error: ae.message, code: ae.code }, ae.status as ContentfulStatusCode);
-      }
+      assertCanRead(c.get('principal'), c.req.param('workspaceId'));
       return c.json({ ok: true });
     });
     app.post('/ws/:workspaceId/write', (c) => {
-      try {
-        assertCanWrite(c.get('principal'), c.req.param('workspaceId'));
-      } catch (err) {
-        const ae = err as AuthorizationError;
-        return c.json({ error: ae.message, code: ae.code }, ae.status as ContentfulStatusCode);
-      }
+      assertCanWrite(c.get('principal'), c.req.param('workspaceId'));
       return c.json({ ok: true });
     });
 
@@ -361,7 +348,7 @@ describe('C1a role enforcement', () => {
     const { humanA, wsA } = twoWorkspaceFixture();
     membership.setMembership(wsA.id, humanA.id, 'read');
 
-    const app = new Hono<{ Variables: { principal: Principal } }>();
+    const app = securityApp();
     app.use('/admin/*', requireRole(membership, 'write'));
     app.post('/admin/thing', (c) => c.json({ ok: true }));
 
@@ -372,6 +359,39 @@ describe('C1a role enforcement', () => {
     expect(res.status).toBe(403);
     const body = (await res.json()) as { code: string };
     expect(body.code).toBe('write_forbidden');
+  });
+
+  it('requireRole(read) maps downstream write denials without a route catch', async () => {
+    const { humanA, wsA } = twoWorkspaceFixture();
+    membership.setMembership(wsA.id, humanA.id, 'read');
+
+    const app = securityApp();
+    app.use('/editor/*', requireRole(membership, 'read'));
+    app.post('/editor/:workspaceId', (c) => {
+      assertCanWrite(c.get('principal'), c.req.param('workspaceId'));
+      return c.json({ ok: true });
+    });
+
+    const res = await app.request(`/editor/${wsA.id}`, {
+      method: 'POST',
+      headers: headersFor(humanA.id, wsA.id),
+    });
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe('write_forbidden');
+  });
+
+  it('does not hide downstream non-authorization errors', async () => {
+    const { humanA, wsA } = twoWorkspaceFixture();
+    const app = securityApp();
+    app.use('/editor/*', requireRole(membership, 'read'));
+    app.get('/editor/boom', () => {
+      throw new Error('unexpected route failure');
+    });
+
+    await expect(
+      app.request('/editor/boom', { headers: headersFor(humanA.id, wsA.id) }),
+    ).rejects.toThrow('unexpected route failure');
   });
 
   it('hasRole: write satisfies read and write; read satisfies only read', () => {

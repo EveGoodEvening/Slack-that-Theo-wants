@@ -24,7 +24,8 @@ export {
 export {
   authMiddleware,
   authorizationErrorResponse,
-  getPrincipal,
+  authorizationErrorHandler,
+  installAuthorizationErrorHandler,
   requireRole,
   type AuthVariables,
 } from './middleware.js';
