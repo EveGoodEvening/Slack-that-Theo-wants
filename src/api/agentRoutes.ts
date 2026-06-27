@@ -11,6 +11,7 @@ import {
   AGENT_TOKEN_SCHEME,
   authorizationErrorResponse,
   AuthorizationError,
+  IdempotencyKeyReuseError,
   type MembershipRepository,
   QuotaExceededError,
   resolveAgentPrincipal,
@@ -19,6 +20,7 @@ import {
 import {
   CommentNotFoundError,
   CommentServiceImpl,
+  DeletedParentError,
   PostNotFoundError,
 } from './commentService.js';
 import {
@@ -405,11 +407,26 @@ function mapAgentError(c: Context, err: unknown): Response {
       429,
     );
   }
+  if (err instanceof IdempotencyKeyReuseError) {
+    return c.json(
+      { error: err.message, code: 'idempotency_key_reuse' },
+      422,
+    );
+  }
+  if (err instanceof DeletedParentError) {
+    return c.json({ error: err.message, code: 'deleted_parent' }, 409);
+  }
   if (err instanceof PostNotFoundError || errorName(err) === 'PostNotFoundError') {
     return c.json({ error: (err as Error).message, code: 'not_found' }, 404);
   }
   if (err instanceof CommentNotFoundError) {
     return c.json({ error: err.message, code: 'not_found' }, 404);
+  }
+  // Cross-workspace resource access (read/status/comment metadata) must not
+  // leak the target workspace's existence: translate workspace_mismatch into a
+  // generic not-found response with no workspace identifier.
+  if (err instanceof AuthorizationError && err.code === 'workspace_mismatch') {
+    return c.json({ error: 'not found', code: 'not_found' }, 404);
   }
   if (err instanceof AuthorizationError) {
     const { status, body } = authorizationErrorResponse(err);

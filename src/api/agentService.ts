@@ -2,6 +2,7 @@ import type { DomainRepository } from '../domain/repositories.js';
 import type { Actor, ActorKind } from '../domain/types.js';
 import {
   DEFAULT_AGENT_QUOTA,
+  IdempotencyKeyReuseError,
   requestDigest,
   type AgentAuditRepository,
   type AgentCredentialRepository,
@@ -361,9 +362,12 @@ export class AgentService {
    * Run an agent write under the idempotency + audit + quota contract.
    *
    * - If an idempotency key is supplied and a record already exists for this
-   *   actor + action, return the stored target as a replay (no new write, no
-   *   bump, no audit, no quota consumed). The original target is re-read via
-   *   `refetch` so the caller receives the current DTO shape.
+   *   actor + action, the current request digest is compared to the stored
+   *   digest. On a match the stored target is returned as a replay (no new
+   *   write, no bump, no audit, no quota consumed); the original target is
+   *   re-read via `refetch` so the caller receives the current DTO shape. On a
+   *   mismatch `IdempotencyKeyReuseError` is thrown — the key was reused for a
+   *   different payload, so the request is rejected without a write or bump.
    * - Otherwise consume quota, perform the write via the shared C2/C3 service,
    *   store the idempotency record, and append an audit record.
    */
@@ -380,6 +384,11 @@ export class AgentService {
     if (idempotencyKey !== undefined && idempotencyKey.length > 0) {
       const existing = this.deps.idempotency.lookup(idempotencyKey, principal.actorId, action);
       if (existing !== undefined) {
+        // Reject a key reused with a different payload before any replay or
+        // write: the digest must match the original request exactly.
+        if (existing.requestDigest !== requestDigest(payloadForDigest)) {
+          throw new IdempotencyKeyReuseError(principal.actorId, idempotencyKey, action);
+        }
         // Replay: re-read the original target without re-performing the write,
         // so no duplicate row and no second feed bump is triggered.
         const replayed = refetch(existing.targetId);

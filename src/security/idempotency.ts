@@ -14,8 +14,10 @@ import type { AgentWriteAction } from './audit.js';
  *
  * The store is keyed by `(key, actor_id, action)`; the same key reused for a
  * different action or actor is a separate entry. A request digest guards
- * against a client reusing a key with a different payload (mismatch returns
- * the stored target but flags the conflict so the service can reject).
+ * against a client reusing a key with a different payload: on replay the
+ * current payload's digest is compared to the stored digest, and a mismatch
+ * throws `IdempotencyKeyReuseError` so the caller rejects the changed
+ * request instead of silently returning the original target.
  */
 
 /** The result of an idempotency lookup. */
@@ -32,6 +34,21 @@ export interface IdempotencyRecord {
 /** Compute a short stable digest of a request payload string. */
 export function requestDigest(payload: string): string {
   return createHash('sha256').update(payload).digest('hex').slice(0, 32);
+}
+
+/** Thrown when an idempotency key is reused with a different payload. */
+export class IdempotencyKeyReuseError extends Error {
+  readonly actorId: string;
+  readonly key: string;
+  readonly action: AgentWriteAction;
+
+  constructor(actorId: string, key: string, action: AgentWriteAction) {
+    super(`idempotency key ${key} was reused with a different payload for action ${action}`);
+    this.name = 'IdempotencyKeyReuseError';
+    this.actorId = actorId;
+    this.key = key;
+    this.action = action;
+  }
 }
 
 export class AgentIdempotencyRepository {

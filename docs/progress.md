@@ -39,7 +39,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
 | C4    | done         | Verified: npm install, test (163 tests), build, lint, typecheck |
 | C5    | done         | Verified: npm install, test (171 tests), build, lint, typecheck |
 | C6    | done         | Verified: npm install, test (192 tests), build, lint, typecheck |
-| C7    | done         | Verified: npm install, test (227 tests), build, lint, typecheck |
+| C7    | done         | Verified: npm install, test (235 tests), build, lint, typecheck |
 | C8    | not started  | Depends on C1a, C2, C3, C4, C5 (optionally C7) |
 | C9    | not started  | Depends on C1a, C2, C3, C4, C7 |
 | C10   | not started  | Depends on all core flows |
@@ -339,5 +339,21 @@ Rules (mirrored from `docs/implementation-plan.md`):
   enforced required idempotency keys on agent HTTP writes, tightened
   credential/profile agent-kind triggers and idempotency-key scoping, and added
   the missing idempotency-required API test. Orchestrator verified `npm install`,
-  `npm test` (227 tests), `npm run build`, `npm run lint`, and
-  `npm run typecheck` after gate fixes. C7 is `done`.
+  `npm test` (235 tests), `npm run build`, `npm run lint`, and
+  `npm run typecheck` after gate and review fixes. C7 is `done`.
+- 2026-06-27 — Chunk C7: review-fix pass in
+  `/root/gitfiles/Slack-that-Theo-wants-C7` — Applied blocking review fixes:
+  idempotency replay now computes the current request digest and rejects a
+  reused key with a different payload via `IdempotencyKeyReuseError` (422
+  `idempotency_key_reuse`) with no write/bump/audit; rate limit replaced the
+  fixed wall-clock bucket with a true rolling/sliding-window event log in
+  `agent_quota_state` (count writes in the trailing `windowMs`, atomic
+  count+insert transaction) so the quota holds at every instant across bucket
+  boundaries; agent reply route maps `DeletedParentError` to 409
+  `deleted_parent` like the human C3 route; and cross-workspace
+  `workspace_mismatch` on agent read/status/metadata routes is translated to a
+  generic redacted 404 `not_found` with no target workspace identifier. Added
+  tests for idempotency-key reuse, rolling-window boundary behavior, and
+  deleted-parent agent replies; tightened the cross-workspace readStatus/readPost
+  redaction assertions. Orchestrator reverified `npm test` (235 tests),
+  `npm run build`, `npm run lint`, and `npm run typecheck`. C7 remains `done`.

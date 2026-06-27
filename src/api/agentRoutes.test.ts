@@ -447,7 +447,9 @@ describe('C7 agent credentials are workspace-scoped', () => {
       content: 'wsB post',
       lastActivityAt: '2026-01-01T00:00:00.000Z',
     });
-    // agentA is in wsA; it must not comment on a wsB post.
+    // agentA is in wsA; it must not comment on a wsB post. Per the C7 redaction
+    // contract, cross-workspace access is translated to a generic 404 not_found
+    // so the target workspace's existence is not leaked (same as read paths).
     const issued = credentials.issue({ actorId: 'agentA', workspaceId: 'wsA' });
     const res = await app().request('/agents/posts/postB/comments', {
       method: 'POST',
@@ -458,7 +460,14 @@ describe('C7 agent credentials are workspace-scoped', () => {
       },
       body: JSON.stringify({ content: 'cross-ws comment' }),
     });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { code: string; error: string };
+    expect(body.code).toBe('not_found');
+    // No workspace identifier leaks and the write was not performed.
+    expect(body.error).not.toContain('wsB');
+    expect(body.error).not.toContain('wsA');
+    expect(JSON.stringify(body)).not.toContain('workspace_mismatch');
+    expect(domain.countCommentsForPost('postB')).toBe(0);
   });
 
   it('an agent cannot read feed/status from another workspace', async () => {
@@ -860,7 +869,7 @@ describe('C7 metadata redaction / least-privilege (no cross-workspace leakage)',
     }
   });
 
-  it('readStatus on a cross-workspace post is rejected (404/403)', async () => {
+  it('readStatus on a cross-workspace post is a redacted 404 with no workspace details', async () => {
     twoWorkspaceFixture();
     domain.createPost({
       id: 'pB3',
@@ -873,7 +882,33 @@ describe('C7 metadata redaction / least-privilege (no cross-workspace leakage)',
     const res = await app().request('/agents/status/pB3', {
       headers: bearerToken(issued.secret),
     });
-    expect([403, 404]).toContain(res.status);
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { code: string; error: string };
+    expect(body.code).toBe('not_found');
+    // No workspace identifier leaks: the response is generic.
+    expect(body.error).not.toContain('wsB');
+    expect(body.error).not.toContain('wsA');
+    expect(JSON.stringify(body)).not.toContain('workspace_mismatch');
+  });
+
+  it('readPost on a cross-workspace post is a redacted 404 with no workspace details', async () => {
+    twoWorkspaceFixture();
+    domain.createPost({
+      id: 'pB4',
+      workspaceId: 'wsB',
+      authorActorId: 'humanB',
+      content: 'wsB',
+      lastActivityAt: '2026-01-01T00:00:00.000Z',
+    });
+    const issued = credentials.issue({ actorId: 'agentA', workspaceId: 'wsA' });
+    const res = await app().request('/agents/posts/pB4', {
+      headers: bearerToken(issued.secret),
+    });
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { code: string; error: string };
+    expect(body.code).toBe('not_found');
+    expect(body.error).not.toContain('wsB');
+    expect(JSON.stringify(body)).not.toContain('workspace_mismatch');
   });
 });
 
@@ -947,6 +982,247 @@ describe('C7 agent profile', () => {
     twoWorkspaceFixture();
     const updated = profiles.setStatus('agentA', 'suspended');
     expect(updated?.status).toBe('suspended');
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('C7 idempotency: reject replay with a different payload', () => {
+  it('reusing a key with different content is rejected with 422 and no write/bump', async () => {
+    twoWorkspaceFixture();
+    domain.createPost({
+      id: 'pIdemMismatch',
+      workspaceId: 'wsA',
+      authorActorId: 'humanA',
+      content: 'post',
+      lastActivityAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    const issued = credentials.issue({ actorId: 'agentA', workspaceId: 'wsA' });
+    const key = 'idem-mismatch-1';
+    const headers = {
+      ...bearerToken(issued.secret),
+      ...idempotencyHeader(key),
+      'content-type': 'application/json',
+    };
+
+    // First write with the key.
+    const r1 = await app().request('/agents/posts/pIdemMismatch/comments', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ content: 'agent comment' }),
+    });
+    expect(r1.status).toBe(201);
+    const b1 = (await r1.json()) as { result: { id: string }; replay: boolean };
+    expect(b1.replay).toBe(false);
+    const firstTargetId = b1.result.id;
+
+    const firstActivity = expectLivePost(domain.getPost('pIdemMismatch')).lastActivityAt;
+    const firstAuditCount = audit.listForActor('agentA').length;
+
+    // Reuse the same key with DIFFERENT content: rejected, no replay.
+    const r2 = await app().request('/agents/posts/pIdemMismatch/comments', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ content: 'different content' }),
+    });
+    expect(r2.status).toBe(422);
+    const b2 = (await r2.json()) as { code: string; error: string };
+    expect(b2.code).toBe('idempotency_key_reuse');
+
+    // No new comment was created: the count is still one.
+    expect(domain.countCommentsForPost('pIdemMismatch')).toBe(1);
+    void firstTargetId;
+
+    // No extra bump: post activity unchanged.
+    const secondActivity = expectLivePost(domain.getPost('pIdemMismatch')).lastActivityAt;
+    expect(secondActivity).toBe(firstActivity);
+
+    // No new audit record was appended for the rejected replay.
+    expect(audit.listForActor('agentA').length).toBe(firstAuditCount);
+  });
+
+  it('reusing a reply key with a different parent/content is rejected with 422', async () => {
+    twoWorkspaceFixture();
+    domain.createPost({
+      id: 'pIdemReplyMismatch',
+      workspaceId: 'wsA',
+      authorActorId: 'humanA',
+      content: 'post',
+      lastActivityAt: '2026-01-01T00:00:00.000Z',
+    });
+    domain.createComment({
+      id: 'cIdemReplyMismatch',
+      workspaceId: 'wsA',
+      rootPostId: 'pIdemReplyMismatch',
+      authorActorId: 'humanA',
+      content: 'comment',
+      createdAt: '2026-01-02T00:00:00.000Z',
+    });
+
+    const issued = credentials.issue({ actorId: 'agentA', workspaceId: 'wsA' });
+    const key = 'idem-reply-mismatch-1';
+    const headers = {
+      ...bearerToken(issued.secret),
+      ...idempotencyHeader(key),
+      'content-type': 'application/json',
+    };
+
+    const r1 = await app().request('/agents/comments/cIdemReplyMismatch/replies', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ content: 'agent reply' }),
+    });
+    expect(r1.status).toBe(201);
+
+    // Reuse the key with different content: rejected.
+    const r2 = await app().request('/agents/comments/cIdemReplyMismatch/replies', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ content: 'changed reply' }),
+    });
+    expect(r2.status).toBe(422);
+    const b2 = (await r2.json()) as { code: string };
+    expect(b2.code).toBe('idempotency_key_reuse');
+
+    // Only the first reply was created (seeded comment + one reply).
+    expect(domain.countCommentsForPost('pIdemReplyMismatch')).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('C7 rate-limit rolling-window enforcement', () => {
+  it('enforces a true rolling window across a boundary (not a fixed bucket)', () => {
+    twoWorkspaceFixture();
+    const cfg = { maxCount: 1, windowMs: 60_000 };
+    const t0 = new Date('2026-06-27T00:00:00.000Z');
+
+    // Consume the single allowed write at t0.
+    expect(quota.checkAndConsume('agentA', 'wsA', cfg, t0)).toBe(1);
+
+    // 30s later, still inside the rolling window: rejected.
+    const t30 = new Date(t0.getTime() + 30_000);
+    expect(() => quota.checkAndConsume('agentA', 'wsA', cfg, t30)).toThrow(QuotaExceededError);
+
+    // 1ms before the window expires: still rejected. The window is
+    // (now − windowMs, now]; at t0+59999 that is (−1, 59999], which still
+    // includes the t0 write (0 > −1), so the quota is exhausted.
+    const tJustBefore = new Date(t0.getTime() + 59_999);
+    expect(() => quota.checkAndConsume('agentA', 'wsA', cfg, tJustBefore)).toThrow(QuotaExceededError);
+
+    // Exactly 60s after: the t0 write has aged out of the window
+    // (windowStart = 60000 − 60000 = 0; occurred_at > 0 excludes t0=0), so a
+    // new write is allowed.
+    const t60 = new Date(t0.getTime() + 60_000);
+    expect(quota.checkAndConsume('agentA', 'wsA', cfg, t60)).toBe(1);
+  });
+
+  it('allows up to maxCount writes within the window and rejects the next', () => {
+    twoWorkspaceFixture();
+    const cfg = { maxCount: 3, windowMs: 60_000 };
+    const t0 = new Date('2026-06-27T00:00:00.000Z');
+    expect(quota.checkAndConsume('agentA', 'wsA', cfg, t0)).toBe(1);
+    expect(quota.checkAndConsume('agentA', 'wsA', cfg, new Date(t0.getTime() + 1_000))).toBe(2);
+    expect(quota.checkAndConsume('agentA', 'wsA', cfg, new Date(t0.getTime() + 2_000))).toBe(3);
+    expect(() =>
+      quota.checkAndConsume('agentA', 'wsA', cfg, new Date(t0.getTime() + 3_000)),
+    ).toThrow(QuotaExceededError);
+  });
+
+  it('currentCount reports the rolling-window count and does not consume', () => {
+    twoWorkspaceFixture();
+    const cfg = { maxCount: 5, windowMs: 60_000 };
+    const t0 = new Date('2026-06-27T00:00:00.000Z');
+    quota.checkAndConsume('agentA', 'wsA', cfg, t0);
+    quota.checkAndConsume('agentA', 'wsA', cfg, new Date(t0.getTime() + 10_000));
+    // Two writes in the window.
+    expect(quota.currentCount('agentA', new Date(t0.getTime() + 20_000), cfg.windowMs)).toBe(2);
+    // After the window passes, the count ages out to zero.
+    expect(quota.currentCount('agentA', new Date(t0.getTime() + 70_000), cfg.windowMs)).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('C7 agent deleted-parent reply mapping', () => {
+  it('POST /agents/comments/:parentId/replies on a soft-deleted parent returns 409 deleted_parent', async () => {
+    twoWorkspaceFixture();
+    domain.createPost({
+      id: 'pDelParent',
+      workspaceId: 'wsA',
+      authorActorId: 'humanA',
+      content: 'post',
+      lastActivityAt: '2026-01-01T00:00:00.000Z',
+    });
+    domain.createComment({
+      id: 'cDelParent',
+      workspaceId: 'wsA',
+      rootPostId: 'pDelParent',
+      authorActorId: 'humanA',
+      content: 'comment',
+      createdAt: '2026-01-02T00:00:00.000Z',
+    });
+
+    // Soft-delete the parent comment so replies into it are rejected.
+    domain.softDeleteComment('cDelParent', '2026-01-03T00:00:00.000Z');
+
+    const issued = credentials.issue({ actorId: 'agentA', workspaceId: 'wsA' });
+    const res = await app().request('/agents/comments/cDelParent/replies', {
+      method: 'POST',
+      headers: {
+        ...bearerToken(issued.secret),
+        ...idempotencyHeader('reply-into-deleted'),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ content: 'late agent reply' }),
+    });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { code: string; error: string };
+    expect(body.code).toBe('deleted_parent');
+
+    // No reply was created. countCommentsForPost counts only live nodes, and
+    // the seeded parent is soft-deleted, so the live count is 0; verify via the
+    // raw subtree that no child node was appended under the deleted parent.
+    expect(domain.countCommentsForPost('pDelParent')).toBe(0);
+    const subtree = domain.getSubtree('cDelParent');
+    expect(subtree).toHaveLength(1);
+    expect(expectArrayItem(subtree, 0).node.id).toBe('cDelParent');
+  });
+
+  it('POST /agents/comments/:parentId/replies below a deleted root post returns 409 deleted_parent', async () => {
+    twoWorkspaceFixture();
+    domain.createPost({
+      id: 'pDelRoot',
+      workspaceId: 'wsA',
+      authorActorId: 'humanA',
+      content: 'post',
+      lastActivityAt: '2026-01-01T00:00:00.000Z',
+    });
+    domain.createComment({
+      id: 'cDelRoot',
+      workspaceId: 'wsA',
+      rootPostId: 'pDelRoot',
+      authorActorId: 'humanA',
+      content: 'comment',
+      createdAt: '2026-01-02T00:00:00.000Z',
+    });
+    // Soft-delete the root post so the comment is in a deleted subtree.
+    domain.softDeletePost('pDelRoot', '2026-01-03T00:00:00.000Z');
+
+    const issued = credentials.issue({ actorId: 'agentA', workspaceId: 'wsA' });
+    const res = await app().request('/agents/comments/cDelRoot/replies', {
+      method: 'POST',
+      headers: {
+        ...bearerToken(issued.secret),
+        ...idempotencyHeader('reply-into-deleted-root'),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ content: 'late agent reply' }),
+    });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe('deleted_parent');
   });
 });
 

@@ -3,21 +3,26 @@ import type { BetterSqliteDatabase } from '../db/connection.js';
 /**
  * C7 agent rate-limit / quota store.
  *
- * Per-(actor, bucket) counter enforcing a quota of agent writes within a
- * rolling time window. The bucket key encodes the window (e.g. per-minute or
- * per-hour). A check increments the counter for the current bucket and rejects
- * with a quota error when the configured limit is exceeded. Stale buckets are
- * not cleaned eagerly; the counter is reset by rotating the bucket key, so old
- * buckets simply stop being queried.
+ * Per-actor rolling-window (sliding-window) write quota. Each consumed write
+ * is recorded as a timestamped event in `agent_quota_state`; a check counts
+ * the events whose timestamp falls strictly within the last `windowMs`
+ * milliseconds and rejects with a quota error when the configured limit would
+ * be exceeded. Because the window slides continuously (it is not a fixed
+ * wall-clock bucket), an agent cannot concentrate up to 2x the quota across a
+ * bucket boundary — at every instant the count of writes in the trailing
+ * `windowMs` is bounded by `maxCount`.
  *
- * This module owns ONLY the counter. The agent service calls `check` before
- * each agent write and rejects excess writes without creating the write (and
- * therefore without an extra feed bump).
+ * The count-then-insert runs inside a synchronous better-sqlite3 transaction
+ * so the check and the consume are atomic with respect to other callers. Old
+ * events are not cleaned eagerly; they simply age out of the window and stop
+ * being counted. The agent service calls `checkAndConsume` before each agent
+ * write and rejects excess writes without creating the write (and therefore
+ * without an extra feed bump).
  */
 
 /** A quota configuration: max writes per window. */
 export interface QuotaConfig {
-  /** Maximum writes allowed within one window. */
+  /** Maximum writes allowed within one rolling window. */
   maxCount: number;
   /** Window duration in milliseconds. */
   windowMs: number;
@@ -32,21 +37,18 @@ export const DEFAULT_AGENT_QUOTA: QuotaConfig = {
 /** Thrown when an agent has exceeded its write quota for the current window. */
 export class QuotaExceededError extends Error {
   readonly actorId: string;
-  readonly bucketKey: string;
+  readonly windowMs: number;
   readonly limit: number;
 
-  constructor(actorId: string, bucketKey: string, limit: number) {
-    super(`agent ${actorId} exceeded write quota (${limit}) for window ${bucketKey}`);
+  constructor(actorId: string, windowMs: number, limit: number) {
+    super(
+      `agent ${actorId} exceeded write quota (${limit}) in the last ${windowMs}ms`,
+    );
     this.name = 'QuotaExceededError';
     this.actorId = actorId;
-    this.bucketKey = bucketKey;
+    this.windowMs = windowMs;
     this.limit = limit;
   }
-}
-
-/** Compute the bucket key for a timestamp under a window. */
-export function bucketKey(at: Date, windowMs: number): string {
-  return String(Math.floor(at.getTime() / windowMs));
 }
 
 export class AgentQuotaRepository {
@@ -54,9 +56,11 @@ export class AgentQuotaRepository {
 
   /**
    * Check and consume one unit of quota for the actor under the given config.
-   * Throws `QuotaExceededError` if the count for the current bucket would
-   * exceed the limit. The increment is atomic (UPSERT + conditional update).
-   * Returns the count after increment.
+   * Counts writes whose timestamp is strictly within the last `windowMs`
+   * milliseconds (a true rolling window). Throws `QuotaExceededError` if the
+   * count is already at the limit; otherwise records the write and returns the
+   * count after consuming. The count + insert is wrapped in a transaction so
+   * concurrent callers cannot both observe room and both insert.
    */
   checkAndConsume(
     actorId: string,
@@ -64,35 +68,36 @@ export class AgentQuotaRepository {
     config: QuotaConfig,
     at: Date = new Date(),
   ): number {
-    const key = bucketKey(at, config.windowMs);
-    const now = at.toISOString();
-    // Ensure a row exists for this bucket.
-    this.db
-      .prepare(
-        'INSERT OR IGNORE INTO agent_quota_state (actor_id, workspace_id, bucket_key, count, updated_at) VALUES (?, ?, ?, 0, ?)',
-      )
-      .run(actorId, workspaceId, key, now);
-    // Atomically increment only when under the limit.
-    const info = this.db
-      .prepare(
-        'UPDATE agent_quota_state SET count = count + 1, updated_at = ? WHERE actor_id = ? AND bucket_key = ? AND count < ?',
-      )
-      .run(now, actorId, key, config.maxCount);
-    if (info.changes !== 1) {
-      throw new QuotaExceededError(actorId, key, config.maxCount);
-    }
-    const row = this.db
-      .prepare('SELECT count FROM agent_quota_state WHERE actor_id = ? AND bucket_key = ?')
-      .get(actorId, key) as { count: number } | undefined;
-    return row?.count ?? config.maxCount;
+    const now = at.getTime();
+    const windowStart = now - config.windowMs;
+    return this.db.transaction(() => {
+      const row = this.db
+        .prepare(
+          'SELECT COUNT(*) AS n FROM agent_quota_state WHERE actor_id = ? AND occurred_at > ?',
+        )
+        .get(actorId, windowStart) as { n: number } | undefined;
+      const count = row?.n ?? 0;
+      if (count >= config.maxCount) {
+        throw new QuotaExceededError(actorId, config.windowMs, config.maxCount);
+      }
+      this.db
+        .prepare(
+          'INSERT INTO agent_quota_state (actor_id, workspace_id, occurred_at) VALUES (?, ?, ?)',
+        )
+        .run(actorId, workspaceId, now);
+      return count + 1;
+    })();
   }
 
-  /** Read the current count for a bucket without consuming. */
+  /** Read the current rolling-window count without consuming. */
   currentCount(actorId: string, at: Date, windowMs: number): number {
-    const key = bucketKey(at, windowMs);
+    const now = at.getTime();
+    const windowStart = now - windowMs;
     const row = this.db
-      .prepare('SELECT count FROM agent_quota_state WHERE actor_id = ? AND bucket_key = ?')
-      .get(actorId, key) as { count: number } | undefined;
-    return row?.count ?? 0;
+      .prepare(
+        'SELECT COUNT(*) AS n FROM agent_quota_state WHERE actor_id = ? AND occurred_at > ?',
+      )
+      .get(actorId, windowStart) as { n: number } | undefined;
+    return row?.n ?? 0;
   }
 }

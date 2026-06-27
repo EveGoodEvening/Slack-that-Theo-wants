@@ -23,9 +23,10 @@ import type { Migration } from '../migrator.js';
  *   Records the request key, actor, action, and the resulting target id + a
  *   digest of the request payload, so a replayed write returns the original
  *   result instead of creating a duplicate (and an extra feed bump).
- * - `agent_quota_state`: per-(actor, window) counter for rate-limit / quota
- *   enforcement. The window is a rolling bucket key (e.g. per-minute or
- *   per-hour) so the counter can be reset by rotating the bucket key.
+ * - `agent_quota_state`: per-actor rolling-window event log for rate-limit /
+ *   quota enforcement. Each consumed write is a timestamped row; the quota
+ *   check counts rows in the trailing `windowMs` so the limit holds at every
+ *   instant (a true sliding window, not a fixed wall-clock bucket).
  *
  * All tables are workspace-scoped through the actor FK and inherit the C1
  * workspace-boundary composite FK so a credential/quota/audit row cannot
@@ -166,24 +167,22 @@ export const migration0003AgentControlPlane: Migration = {
         REFERENCES actor (workspace_id, id) ON DELETE CASCADE
     );
     `,
-    'CREATE INDEX idx_agent_idempotency_actor ON agent_idempotency_key (actor_id, created_at);',
     `
     CREATE TABLE agent_quota_state (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
       actor_id        TEXT NOT NULL,
       workspace_id    TEXT NOT NULL,
-      bucket_key      TEXT NOT NULL,
-      count           INTEGER NOT NULL DEFAULT 0,
-      updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
-      PRIMARY KEY (actor_id, bucket_key),
+      occurred_at     INTEGER NOT NULL,
       FOREIGN KEY (actor_id) REFERENCES actor (id) ON DELETE CASCADE,
       FOREIGN KEY (workspace_id) REFERENCES workspace (id) ON DELETE RESTRICT,
       FOREIGN KEY (workspace_id, actor_id)
-        REFERENCES actor (workspace_id, id) ON DELETE CASCADE,
-      CHECK (count >= 0)
+        REFERENCES actor (workspace_id, id) ON DELETE CASCADE
     );
     `,
+    'CREATE INDEX idx_agent_quota_actor_time ON agent_quota_state (actor_id, occurred_at);',
   ],
   down: [
+    'DROP INDEX IF EXISTS idx_agent_quota_actor_time;',
     'DROP TABLE IF EXISTS agent_quota_state;',
     'DROP INDEX IF EXISTS idx_agent_idempotency_actor;',
     'DROP TABLE IF EXISTS agent_idempotency_key;',

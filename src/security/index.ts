@@ -61,12 +61,10 @@ export type { AgentPrincipalRequest } from './agentPrincipal.js';
 export { AgentAuditRepository } from './audit.js';
 export type { AgentAuditRow, AgentWriteAction } from './audit.js';
 
-export { AgentIdempotencyRepository, requestDigest } from './idempotency.js';
-export type { IdempotencyRecord } from './idempotency.js';
+export { AgentIdempotencyRepository, IdempotencyKeyReuseError, requestDigest } from './idempotency.js';
 
 export {
   AgentQuotaRepository,
-  bucketKey,
   DEFAULT_AGENT_QUOTA,
   QuotaExceededError,
 } from './rateLimit.js';
