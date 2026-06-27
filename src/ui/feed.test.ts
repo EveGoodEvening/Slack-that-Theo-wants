@@ -221,6 +221,19 @@ describe('C4 create post appears in feed', () => {
     expect(html).toContain('feed-error');
     expect(html).toContain('missing_principal');
   });
+
+  it('rejects a read-only principal with 403 write_forbidden and creates no post', async () => {
+    const { humanA, wsA } = twoWorkspaceFixture();
+    membership.setMembership(wsA.id, humanA.id, 'read');
+    const a = app();
+
+    const { status, html } = await createPostViaForm(a, humanA.id, wsA.id, 'no write');
+
+    expect(status).toBe(403);
+    expect(html).toContain('feed-error');
+    expect(html).toContain('write_forbidden');
+    expect(domain.listPostsInWorkspace(wsA.id, 10)).toEqual([]);
+  });
 });
 
 describe('C4 unsafe HTML/script is escaped/sanitized', () => {

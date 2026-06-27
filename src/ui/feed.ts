@@ -326,6 +326,14 @@ export function feedRoutes(deps: FeedRouteDeps): Hono {
       } catch {
         // ignore
       }
+      if (err instanceof AuthorizationError) {
+        return c.html(
+          renderFeedDocument(posts, principal, {
+            error: `${err.code}: ${err.message}`,
+          }),
+          err.status as 401 | 403,
+        );
+      }
       return c.html(
         renderFeedDocument(posts, principal, {
           error: (err as Error).message,

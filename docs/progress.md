@@ -36,7 +36,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
 | C2    | done         | Verified: npm install, test (132 tests), build, lint, typecheck |
 | C3    | done         | Verified: npm install, test (151 tests), build, lint, typecheck |
 | C3a   | done         | Verified: npm install, test (109 tests), build, lint, typecheck |
-| C4    | done         | Verified: npm install, test (162 tests), build, lint, typecheck |
+| C4    | done         | Verified: npm install, test (163 tests), build, lint, typecheck |
 | C5    | not started  | Depends on C3, C4, C3a |
 | C6    | not started  | Depends on C3a, C4, C5 |
 | C7    | not started  | Depends on C1, C1a, C2, C3 |
@@ -289,7 +289,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
   orchestrator verified `npm install`, `npm test` (151 tests),
   `npm run build`, `npm run lint`, and `npm run typecheck` after type and
   review fixes. C3 is `done`.
-- 2026-06-27 — Chunk C4: not started -> in progress — Implementation
+- 2026-06-27 — Chunk C4: not started -> done — Implementation
   complete in worktree `chunk/C4`. Added server-rendered feed UI in
   `src/ui/feed.ts` (GET /feed consumes C2 PostService.listFeed in API order;
   every post body routed through C3a renderPostContent; POST /feed create-post
@@ -300,6 +300,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
   ordering follows API order (including a bumped older post), and unsafe
   HTML/script escaping on feed and post-creation surfaces. Gate fixes removed
   root-mounted JSON auth interception for /feed, aligned browser form principal
-  fields with C1a validation, and adjusted escaped-HTML assertions. Orchestrator
-  verified `npm install`, `npm test` (162 tests), `npm run build`,
-  `npm run lint`, and `npm run typecheck`. C4 is `done`.
+  fields with C1a validation, adjusted escaped-HTML assertions, and mapped
+  write-scope denials to 403 HTML errors. Orchestrator verified `npm install`,
+  `npm test` (163 tests), `npm run build`, `npm run lint`, and
+  `npm run typecheck`. C4 is `done`.
