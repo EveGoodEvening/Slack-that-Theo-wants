@@ -38,13 +38,13 @@ export function createApp(deps?: AppDeps): Hono {
 
 /**
  * Build the post-route dependencies for the dev server: open the SQLite
- * database at DATABASE_PATH (default `./app.db`), run migrations, and wire the
+ * database at DATABASE_PATH (default `./app.sqlite`), run migrations, and wire the
  * domain + membership repositories. Returns undefined when the database cannot
  * be opened so the health-only app still boots.
  */
 function buildDeps(): AppDeps | undefined {
   try {
-    const dbPath = process.env.DATABASE_PATH ?? './app.db';
+    const dbPath = process.env.DATABASE_PATH ?? './app.sqlite';
     const db = openDatabase(dbPath);
     migrateUp(db, migrations);
     return {
@@ -57,18 +57,16 @@ function buildDeps(): AppDeps | undefined {
   }
 }
 
-const app = createApp(buildDeps());
-
-const port = Number(process.env.PORT ?? 3000);
-// Bind to loopback by default so the dev server is not exposed on every
-// interface. Set HOST=0.0.0.0 explicitly to opt in to remote/container access.
-const hostname = process.env.HOST ?? '127.0.0.1';
+export const app = createApp();
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  serve({ fetch: app.fetch, port, hostname }, (info) => {
+  const port = Number(process.env.PORT ?? 3000);
+  // Bind to loopback by default so the dev server is not exposed on every
+  // interface. Set HOST=0.0.0.0 explicitly to opt in to remote/container access.
+  const hostname = process.env.HOST ?? '127.0.0.1';
+  const serverApp = createApp(buildDeps());
+  serve({ fetch: serverApp.fetch, port, hostname }, (info) => {
     const host = info.family === 'IPv6' ? `[${info.address}]` : info.address;
     console.log(`Server listening on http://${host}:${info.port}`);
   });
 }
-
-export { app };

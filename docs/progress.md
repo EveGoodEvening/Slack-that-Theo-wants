@@ -278,3 +278,8 @@ Rules (mirrored from `docs/implementation-plan.md`):
   post API with C1a authorization and composite feed cursor; orchestrator
   verified `npm install`, `npm test` (132 tests), `npm run build`,
   `npm run lint`, and `npm run typecheck` after gate fixes. C2 is `done`.
+- 2026-06-27 — Chunk C2: review fixes verified — Deferred local database
+  bootstrap to the direct dev-server path, switched default DB to ignored
+  `app.sqlite`, removed generated `app.db*` artifacts, and reverified
+  `npm test` (132 tests), `npm run build`, `npm run lint`, and
+  `npm run typecheck`. C2 remains `done`.

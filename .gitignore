@@ -28,6 +28,10 @@ Thumbs.db
 npm-debug.log*
 
 # Local persistence (SQLite for later chunks)
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite-journal
 *.sqlite-shm
