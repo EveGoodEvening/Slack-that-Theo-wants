@@ -213,3 +213,41 @@ These are recorded here so later chunks do not re-litigate them.
   cross-workspace node is deleted). `AuthorizationError` is mapped by the
   shared C1a error handler; C3 not-found errors map to 404 and
   deleted-parent to 409.
+
+## C4 decisions (minimal human UI: feed and post creation)
+
+These are recorded here so later chunks do not re-litigate them.
+
+- **UI approach:** server-rendered HTML via Hono `c.html()`. No frontend
+  framework is introduced. Chosen over a client SPA because the stack is
+  Hono server-side with no DOM dependency, the feed is read-mostly, and a
+  server-rendered page keeps the security surface small (content is sanitized
+  once on the server via C3a before it ever leaves the process). C5/C6 may add
+  progressive enhancement on top of this same route; C8 adds realtime. The feed
+  is mounted at `GET /feed` (the JSON discovery root at `/` is preserved so the
+  C0 health smoke test stays green).
+- **C2 consumption:** the feed view calls the C2 `PostService.listFeed`
+  directly in-process (server-side), not via a self-HTTP call. Posts are
+  rendered in the exact order the service returns them — the UI never re-sorts
+  client-side. The create-post form posts to `POST /feed`, which calls
+  `PostService.createPost` and re-renders the feed so the new post appears at
+  the top.
+- **C3a rendering:** every post body is routed through `renderPostContent`
+  before insertion into the HTML. Raw stored content is never emitted. Static
+  template text (author id, timestamps, ids) is HTML-escaped via a local
+  `escapeText` helper; the C3a-rendered body HTML is inserted as-is because it
+  is already the product of the allowlisting renderer.
+- **Principal resolution (C1a reuse):** the UI resolves the principal through
+  the same C1a `membership.resolveMembership` + `membershipToPrincipal` core as
+  the API middleware. Credentials are read from request headers first (API
+  clients), then query parameters on GET and form fields on POST (browsers with
+  no custom-header support). The pair is always validated against the
+  membership table; C9 swaps the extraction, not the validation. The
+  create-post form carries the principal credentials as hidden inputs so it is
+  self-contained.
+- **States:** empty state when the workspace has no posts; error state when
+  principal resolution fails (401/403 error document) or the feed read throws
+  (500 with error block); a progressive-enhancement loading indicator toggles
+  `is-loading` / `aria-busy` on form submit, with a `<noscript>` fallback that
+  still submits normally. Server-rendered content is already present, so a
+  true loading spinner is only meaningful for the create-post round-trip.

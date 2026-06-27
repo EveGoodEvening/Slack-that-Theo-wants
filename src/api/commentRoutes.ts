@@ -2,7 +2,6 @@ import { type Context, Hono } from 'hono';
 import type { DomainRepository } from '../domain/repositories.js';
 import type { MembershipRepository } from '../security/membership.js';
 import {
-  authMiddleware,
   installAuthorizationErrorHandler,
   requireRole,
   type AuthVariables,
@@ -18,8 +17,8 @@ import {
 /**
  * C3 comment/reply HTTP surface.
  *
- * Mounts four endpoints under /posts/:postId/comments and /comments, all routed
- * through the C1a shared authorization middleware:
+ * Mounts four endpoints under /posts/:postId/comments and /comments. Each
+ * endpoint installs the shared C1a role middleware directly:
  * - POST   /posts/:postId/comments          create a first-level comment (write)
  * - POST   /comments/:parentId/replies      create a reply to any comment (write)
  * - GET    /comments/:id/subtree            fetch a subtree rooted at a comment (read)
@@ -47,9 +46,10 @@ export function commentRoutes(deps: CommentRouteDeps): Hono<{
 
   const service = deps.service ?? new CommentServiceImpl(deps.repository);
 
-  // Base auth on every route: resolves + stores the principal.
-  route.use('*', authMiddleware(deps.membership));
-
+  // Route-level role middleware below resolves/stores the principal for the
+  // comment API paths only. Do not install a root wildcard middleware here: this
+  // sub-app is mounted at '/', and a wildcard would also intercept human UI
+  // routes such as /feed before they can render their HTML error states.
   // Create first-level comment — write role baseline.
   route.post(
     '/posts/:postId/comments',
