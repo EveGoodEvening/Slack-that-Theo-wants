@@ -1,3 +1,4 @@
+import { CODE_BLOCK_CSS, COPY_CODE_SCRIPT, PREVIEW_SCRIPT } from './codeBlockUi.js';
 import { Hono } from 'hono';
 import {
   CommentNotFoundError,
@@ -76,6 +77,8 @@ function renderCommentComposer(postId: string, principal: Principal): string {
       <textarea id="new-comment" name="content" required maxlength="4000" placeholder="Write a comment…"></textarea>
 ${renderPrincipalFields(principal)}
       <button type="submit">Comment</button>
+      <button type="button" class="preview-toggle" data-preview-for="new-comment" aria-pressed="false">Preview</button>
+      <div class="composer-preview" data-preview-for="new-comment"></div>
     </form>`;
 }
 
@@ -91,6 +94,8 @@ function renderReplyComposer(
         <textarea id="reply-${escapedParentId}" name="content" required maxlength="4000" placeholder="Reply…"></textarea>
 ${renderPrincipalFields(principal)}
         <button type="submit">Reply</button>
+        <button type="button" class="preview-toggle" data-preview-for="reply-${escapedParentId}" aria-pressed="false">Preview</button>
+        <div class="composer-preview" data-preview-for="reply-${escapedParentId}"></div>
       </form>`;
 }
 
@@ -237,6 +242,7 @@ function renderPostDetailDocument(input: {
     .reply-depth-safeguard, .conversation-empty { color: #666; font-style: italic; }
     .conversation-error { color: #b00; }
     .conversation-notice { color: #060; }
+${CODE_BLOCK_CSS}
   </style>
 </head>
 <body>
@@ -254,6 +260,10 @@ ${renderPostArticle(post)}
 ${renderCommentComposer(post.id, principal)}
 ${renderConversation(comments, post.id, principal)}
   </section>
+  <script>
+${COPY_CODE_SCRIPT}
+${PREVIEW_SCRIPT}
+  </script>
 </body>
 </html>`;
 }

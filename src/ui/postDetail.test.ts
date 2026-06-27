@@ -129,6 +129,31 @@ async function getPostDetail(
   return { status: res.status, html: await res.text() };
 }
 
+function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+function stripTags(html: string): string {
+  return decodeHtmlEntities(html.replace(/<[^>]*>/g, ''));
+}
+
+function firstCodeBlockText(html: string): string {
+  const match = /<pre><code(?: class="[^"]+")?>([\s\S]*?)<\/code><\/pre>/.exec(html);
+  expect(match).not.toBeNull();
+  return stripTags(match?.[1] ?? '');
+}
+
+function firstCodeBlockHtml(html: string): string {
+  const match = /<pre><code(?: class="[^"]+")?>([\s\S]*?)<\/code><\/pre>/.exec(html);
+  expect(match).not.toBeNull();
+  return match?.[1] ?? '';
+}
+
 async function postCommentForm(
   appInstance: Hono,
   postId: string,
@@ -456,5 +481,117 @@ describe('C5 post detail conversation rendering', () => {
     expect(html).toContain('Comment added.');
     expect(html).toContain('Composer comment');
     expect(html).toContain('1 total comment/reply; 1 first-level comment.');
+  });
+});
+
+describe('C6 code blocks in the conversation UI', () => {
+  it('renders a fenced code block in a nested reply with formatting and copy affordance', async () => {
+    const { workspace, ada, bo, cy } = workspaceFixture();
+    seedPost('post-1', workspace.id, ada.id, 'Root post', '2026-01-01T00:00:00.000Z');
+    seedComment({
+      id: 'comment-a',
+      workspaceId: workspace.id,
+      rootPostId: 'post-1',
+      authorActorId: bo.id,
+      content: 'Look at this code:',
+      createdAt: '2026-01-01T00:01:00.000Z',
+    });
+    const code = '```ts\nconst sum = (a, b) => {\n  return a + b;\n};\n```';
+    seedReply({
+      id: 'reply-a',
+      workspaceId: workspace.id,
+      rootPostId: 'post-1',
+      parentId: 'comment-a',
+      authorActorId: cy.id,
+      content: code,
+      createdAt: '2026-01-01T00:02:00.000Z',
+    });
+
+    const { status, html } = await getPostDetail(app(), 'post-1', ada.id, workspace.id);
+
+    expect(status).toBe(200);
+    // The code block is rendered (not escaped as a whole) inside the reply.
+    expect(html).toMatch(/<figure class="code-block" data-lang="ts">/);
+    expect(html).toMatch(/<pre><code class="language-ts">/);
+    const renderedCode = firstCodeBlockText(html);
+    expect(renderedCode).toBe('const sum = (a, b) => {\n  return a + b;\n};');
+    // Highlighting + copy affordance are present.
+    expect(html).toContain('<span class="tok-keyword">const</span>');
+    expect(html).toContain('class="copy-code"');
+    // The reply surface still blocks live event-handler injection.
+    expect(html).not.toMatch(/<[^>]+\son\w+\s*=/i);
+  });
+
+  it('sanitizes a script payload inside a code block on the nested reply surface', async () => {
+    const { workspace, ada, bo, cy } = workspaceFixture();
+    seedPost('post-1', workspace.id, ada.id, 'Root post', '2026-01-01T00:00:00.000Z');
+    seedComment({
+      id: 'comment-a',
+      workspaceId: workspace.id,
+      rootPostId: 'post-1',
+      authorActorId: bo.id,
+      content: 'check this',
+      createdAt: '2026-01-01T00:01:00.000Z',
+    });
+    seedReply({
+      id: 'reply-a',
+      workspaceId: workspace.id,
+      rootPostId: 'post-1',
+      parentId: 'comment-a',
+      authorActorId: cy.id,
+      content: '```\n<script>alert(1)</script>\n```',
+      createdAt: '2026-01-01T00:02:00.000Z',
+    });
+
+    const { html } = await getPostDetail(app(), 'post-1', ada.id, workspace.id);
+
+    const codeHtml = firstCodeBlockHtml(html);
+    expect(codeHtml).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    expect(codeHtml).not.toMatch(/<script[\s>]/i);
+    expect(html).not.toMatch(/<[^>]+\son\w+\s*=/i);
+    expect(html).toContain('class="copy-code"');
+  });
+
+  it('renders a code block in a post body on the feed with a copy button', async () => {
+    const { workspace, ada } = workspaceFixture();
+    seedPost('post-code', workspace.id, ada.id, '```js\nconsole.log("hi");\n```', '2026-01-01T00:00:00.000Z');
+
+    const res = await app().request('/feed', { headers: headersFor(ada.id, workspace.id) });
+    const html = await res.text();
+
+    expect(res.status).toBe(200);
+    expect(html).toMatch(/<figure class="code-block" data-lang="js">/);
+    expect(html).toContain('<span class="tok-string">&quot;hi&quot;</span>');
+    expect(html).toContain('class="copy-code"');
+  });
+
+  it('renders a sanitized preview of code-block content via POST /feed/preview', async () => {
+    const { workspace, ada } = workspaceFixture();
+    const a = app();
+    const form = new URLSearchParams();
+    form.set('content', '```ts\nconst x = 1;\n```');
+    const res = await a.request('/feed/preview', {
+      method: 'POST',
+      headers: { ...headersFor(ada.id, workspace.id), 'content-type': 'application/x-www-form-urlencoded' },
+      body: form.toString(),
+    });
+    const html = await res.text();
+
+    expect(res.status).toBe(200);
+    expect(html).toMatch(/<figure class="code-block" data-lang="ts">/);
+    expect(html).toContain('<span class="tok-keyword">const</span>');
+    expect(firstCodeBlockText(html)).toBe('const x = 1;');
+    expect(html).not.toMatch(/<[^>]+\son\w+\s*=/i);
+  });
+
+  it('rejects a preview request without a valid principal', async () => {
+    const form = new URLSearchParams();
+    form.set('content', 'hello');
+    const res = await app().request('/feed/preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: form.toString(),
+    });
+    expect(res.status).toBe(401);
   });
 });

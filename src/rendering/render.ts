@@ -17,10 +17,14 @@
  * - No DOM dependency is required (the server runtime is Node, not a
  *   browser), keeping the security surface small and fully auditable.
  *
- * C6 adds syntax highlighting / copy affordances on top of this renderer; it
- * must not bypass `renderContent`. C4/C5 consume `renderPostContent` /
- * `renderCommentContent` and must never render raw stored content.
+ * C6 adds dependency-free syntax highlighting and a copy affordance on top of
+ * this renderer (`renderCodeBlock` + `src/rendering/highlight.ts`); it never
+ * bypasses `renderContent` — the highlighter only wraps already-escaped token
+ * text in `<span class="tok-…">` with a fixed class allowlist. C4/C5 consume
+ * `renderPostContent` / `renderCommentContent` and must never render raw
+ * stored content.
  */
+import { highlightGeneric, isTokenKind, tokenize, type HighlightToken } from './highlight.js';
 
 export interface LiveRenderableContent {
   readonly content: string;
@@ -498,13 +502,40 @@ function matchHeading(line: string): { level: number; text: string } | null {
   return { level: (match[1] ?? '').length, text: match[2] ?? '' };
 }
 
+/**
+ * Render a fenced code block to safe HTML with optional syntax highlighting
+ * and a copy affordance (C6).
+ *
+ * Safety model: the raw code is tokenized by the C6 highlighter into typed
+ * spans; each token's text is HTML-escaped here and wrapped in
+ * `<span class="tok-{kind}">…</span>`. The only new live tags introduced are
+ * `span` (with a class from the fixed `TOKEN_KINDS` allowlist) and the
+ * `<figure>`/`<button>` chrome — no event handlers, no raw markup ever passes
+ * through. The copy button carries no payload attribute: the progressive-
+ * enhancement script reads `code.textContent` (the browser unescapes entities
+ * automatically), so the clipboard receives the original bytes without any
+ * user content being duplicated into an attribute.
+ *
+ * The language hint is restricted by `safeLanguageHint` to a safe class-token
+ * charset; unrecognized languages fall back to a single `plain` token, so the
+ * code is still rendered verbatim with formatting intact and sanitized.
+ */
 function renderCodeBlock(code: string, lang: string): string {
-  const escaped = escapeHtml(code);
   const hint = safeLanguageHint(lang);
-  if (hint) {
-    return `<pre><code class="language-${hint}">${escaped}</code></pre>`;
+  const langClass = hint ? ` class="language-${hint}"` : '';
+  const langLabel = hint ? hint : 'code';
+  const tokens = hint ? tokenize(code, hint) : highlightGeneric(code);
+  const highlighted = tokens.map(renderToken).join('');
+  return `<figure class="code-block" data-lang="${escapeHtml(langLabel)}"><pre><code${langClass}>${highlighted}</code></pre><button class="copy-code" type="button" aria-label="Copy code">Copy</button></figure>`;
+}
+
+/** Escape one token's text and wrap it in a safe `<span class="tok-…">`. */
+function renderToken(token: HighlightToken): string {
+  const escaped = escapeHtml(token.text);
+  if (!isTokenKind(token.kind) || token.kind === 'plain') {
+    return escaped;
   }
-  return `<pre><code>${escaped}</code></pre>`;
+  return `<span class="tok-${token.kind}">${escaped}</span>`;
 }
 
 // ---------------------------------------------------------------------------

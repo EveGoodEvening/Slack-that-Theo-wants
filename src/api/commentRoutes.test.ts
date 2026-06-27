@@ -227,13 +227,21 @@ describe('C3 arbitrary-depth insertion and retrieval', () => {
     };
     expect(thread.postId).toBe('p1');
     expect(thread.comments).toHaveLength(2);
-    const c1Node = elementAt(thread.comments, 0);
-    expect(c1Node.node.id).toBe(c1.id);
-    expect(c1Node.children).toHaveLength(1);
-    const c2Node = elementAt(thread.comments, 1);
-    expect(c2Node.node.id).toBe(c2.id);
-    expect(c2Node.children).toHaveLength(0);
-    expect(elementAt(c1Node.children, 0).node.id).toBe(r1.id);
+    const expectedFirstLevel = [c1, c2].sort((left, right) => {
+      const createdAtOrder = left.createdAt.localeCompare(right.createdAt);
+      return createdAtOrder === 0 ? left.id.localeCompare(right.id) : createdAtOrder;
+    });
+    expect(thread.comments.map((comment) => comment.node.id)).toEqual(
+      expectedFirstLevel.map((comment) => comment.id),
+    );
+
+    const c1Node = thread.comments.find((comment) => comment.node.id === c1.id);
+    expect(c1Node).toBeDefined();
+    expect(c1Node?.children).toHaveLength(1);
+    const c2Node = thread.comments.find((comment) => comment.node.id === c2.id);
+    expect(c2Node).toBeDefined();
+    expect(c2Node?.children).toHaveLength(0);
+    expect(elementAt(c1Node?.children ?? [], 0).node.id).toBe(r1.id);
   });
 });
 

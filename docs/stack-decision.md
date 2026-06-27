@@ -285,3 +285,56 @@ These are recorded here so later chunks do not re-litigate them.
   maximum render-depth safeguard collapses descendants beyond the configured
   limit so pathological trees cannot explode the server-rendered document.
 
+## C6 decisions (code block / message authoring experience)
+
+These are recorded here so later chunks do not re-litigate them.
+
+- **Highlighting strategy: dependency-free tokenizer.** A custom, single-pass
+  tokenizer (`src/rendering/highlight.ts`) recognizes a small, well-known set of
+  tokens (comments, strings, numbers, keywords, literals, punctuation) for
+  TypeScript/JavaScript and aliases (`ts`/`tsx`/`typescript`/`js`/`jsx`/
+  `javascript`/`mjs`/`cjs`). Unrecognized languages fall back to a single
+  `plain` token so the code is still rendered verbatim with formatting intact.
+  Chosen over a library (highlight.js/Shiki) to keep the security surface small,
+  fully auditable, and dependency-free, consistent with the C3a thin-layers
+  philosophy. The server runtime is Node, not a browser, so a DOM-based
+  highlighter is not an option.
+- **Safety model (unchanged from C3a):** the highlighter never introduces live
+  HTML on its own. It tokenizes the **raw** code into typed spans; the renderer
+  (`renderCodeBlock`) HTML-escapes each token's text and wraps it in
+  `<span class="tok-{kind}">…</span>`. The only new live tags C6 adds to the
+  renderer's emitted set are `span` (with a class from the fixed `TOKEN_KINDS`
+  allowlist), `figure`, and `button` (the copy affordance) — no event handlers,
+  no attributes carrying user content, no raw markup ever passes through. The
+  language hint is restricted by the existing `safeLanguageHint` to a safe
+  class-token charset, so it cannot inject markup into the `class` or
+  `data-lang` attributes.
+- **Copy affordance: progressive enhancement, no payload attribute.** Each code
+  block is wrapped in `<figure class="code-block">` with a `<button
+  class="copy-code">Copy</button>`. The copy script reads `code.textContent`
+  from the DOM; the browser unescapes HTML entities when reading `textContent`,
+  so the clipboard receives the original code bytes without any user content
+  being duplicated into an attribute (which would have re-introduced an
+  injection surface and broken sanitization assertions). Without JS the code is
+  still fully visible and selectable. The script uses `navigator.clipboard`
+  with a `document.execCommand('copy')` fallback.
+- **Formatting preservation in nested replies:** the C5 path
+  (`renderCommentContent` → `renderContent` → `renderBlocks` →
+  `renderCodeBlock`) already renders replies through the same renderer as
+  posts; C6 only changes what `renderCodeBlock` emits. Indentation and newlines
+  are preserved verbatim inside `<pre>`, and highlight spans wrap escaped text
+  only, so formatting survives every surface (post, comment, reply, blockquote
+  nesting).
+- **Optional preview mode:** `POST /feed/preview` renders raw composer text
+  through `renderContent` and returns the safe HTML fragment. The composer
+  preview toggle (in both the feed create-post form and the post-detail
+  comment/reply composers) POSTs the textarea value and inserts the response
+  into a preview pane. The preview is always produced by the same sanitizing
+  renderer as live content, so it can never introduce unsanitized markup.
+  Principal resolution is required to keep the surface consistent with the C1a
+  authorization baseline.
+- **Shared UI assets:** the code-block CSS, copy script, and preview script
+  live in `src/ui/codeBlockUi.ts` as static strings interpolated into the C4
+  feed and C5 post-detail documents, avoiding duplication. They contain no user
+  content and no template interpolation.
+
