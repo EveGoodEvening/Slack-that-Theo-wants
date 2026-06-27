@@ -52,9 +52,9 @@ should be revisited when the team makes an explicit decision.
    or recursive CTE) is a Chunk 1 decision.
 4. **Feed bumping is a data-layer invariant, not a UI sort.** `README.md:20`
    marks it as most important; implementing it only on the client is incorrect.
-   Any new comment/reply/agent reply must atomically update the parent post's
-   `lastActivityAt` through a **single shared bump helper** owned by C1, so C2
-   and C3 never invent competing implementations.
+   Any new comment/reply/agent reply must atomically and monotonically update
+   the parent post's `lastActivityAt` through a **single shared bump helper**
+   owned by C1, so C2 and C3 never invent competing implementations.
 5. **Agents use the same post/comment/reply primitives as humans.** A separate
    bot-message table would violate the same-control-plane goal and duplicate
    behavior. Actor identity must represent both humans and agents. The actor
@@ -73,8 +73,8 @@ should be revisited when the team makes an explicit decision.
    credentials in C7).
 9. **Deletion is minimally specified.** MVP uses soft-delete (`deletedAt`) for
    posts and comments/replies; hard delete and moderation tooling are deferred.
-   Deleted-parent behavior is defined in C3 (reject replies into a deleted
-   subtree; return tombstone placeholders with children preserved).
+   C1's data layer rejects inserts into a deleted post/comment subtree and
+   returns tombstone placeholders with children preserved.
 10. **User content is sanitized before any UI display.** A safe content
     renderer/sanitizer is established in **C3a** as a prerequisite for C4/C5; no
     UI chunk may render raw stored content. Syntax highlighting/copy affordances
