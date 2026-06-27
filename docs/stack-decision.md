@@ -131,3 +131,38 @@ These are recorded here so later chunks do not re-litigate them.
   C7 (agent feed polling), and C8 (realtime event fan-out) apply before
   ordering/pagination to exclude cross-workspace records for both human and
   agent principals. C1a exposes the helpers without exposing those surfaces.
+
+## C3a decisions (safe content rendering)
+
+These are recorded here so later chunks do not re-litigate them.
+
+- **Rendering strategy:** a custom Markdown-subset renderer with strict
+  allowlisting, implemented in `src/rendering/render.ts`. Chosen over a
+  markdown library + DOM-based sanitizer (e.g. markdown-it + DOMPurify/jsdom)
+  because the server runtime is Node (no DOM), and a custom allowlisting
+  renderer keeps the security surface small, fully auditable, and dependency
+  free — consistent with the project's thin-layers / no-unnecessary-deps
+  philosophy. The supported grammar is deliberately tiny: paragraphs, ATX
+  headings, blockquotes, unordered/ordered lists, fenced and inline code,
+  strong/emphasis, links, and hard/soft line breaks. C6 adds syntax
+  highlighting and copy affordances on top of this renderer and must not
+  bypass it.
+- **Sanitization model:** no raw HTML ever passes through. Every user text
+  byte is HTML-escaped (`&`, `<`, `>`, `"`, `'`); the only live tags in output
+  are the fixed set the renderer emits (`p`, `h1`–`h6`, `blockquote`, `ul`,
+  `ol`, `li`, `pre`, `code`, `strong`, `em`, `a`, `br`). Link destinations are
+  scheme-allowlisted to `http`, `https`, `mailto`, and relative URLs (`/`,
+  `#`, `?`); `javascript:`, `data:`, `vbscript:`, and all other schemes are
+  dropped. Control/whitespace characters that can hide a scheme are stripped
+  before scheme parsing. Fenced-code language hints are restricted to a safe
+  class-name charset.
+- **Reusable API:** `renderContent` is the single sanitizing entry point over
+  a content string. `renderPostContent(input)` and
+  `renderCommentContent(input, surface)` accept renderer-owned narrow inputs:
+  `{ content: string }` for live post/comment/reply content or
+  `{ isDeleted: true }` for a tombstone/deleted marker. They return a
+  `RenderedContent` (`{ surface, html, isTombstone }`). C3a intentionally
+  depends only on C0 and does not import C1 domain view types or predicates;
+  C4/C5 adapters should map their own post/comment/reply view shapes into this
+  narrow input before rendering. Tombstones render a fixed placeholder and never
+  reference redacted content. The barrel is `src/rendering/index.ts`.
