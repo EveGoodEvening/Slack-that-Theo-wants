@@ -81,6 +81,14 @@ function expectLivePost(post: ReturnType<DomainRepository['getPost']>) {
   return post;
 }
 
+function expectLiveComment(comment: ReturnType<DomainRepository['getComment']>) {
+  expect(comment).toBeDefined();
+  if (comment === undefined) throw new Error('comment missing');
+  expect(isCommentTombstone(comment)).toBe(false);
+  if (isCommentTombstone(comment)) throw new Error('expected live comment');
+  return comment;
+}
+
 describe('C1 migrations', () => {
   it('applies cleanly on a fresh database', () => {
     expect(appliedMigrations(db)).toEqual([1]);
@@ -158,7 +166,7 @@ describe('C1 actor polymorphism', () => {
     });
     expect(comment.authorActorId).toBe(agent.id);
     // The FK to actor(id) resolved for an agent row — polymorphism holds.
-    expect(repo.getComment(comment.id)?.authorActorId).toBe(agent.id);
+    expect(expectLiveComment(repo.getComment(comment.id)).authorActorId).toBe(agent.id);
   });
 });
 
@@ -520,6 +528,28 @@ describe('C1 soft-delete tombstone behavior', () => {
     }
   });
 
+  it('redacts a soft-deleted comment through the public comment read', () => {
+    const repo = new DomainRepository(db);
+    const { ws, human, post } = fixture(repo);
+    const root = repo.createComment({
+      id: 'public-read-c',
+      workspaceId: ws.id,
+      rootPostId: post.id,
+      authorActorId: human.id,
+      content: 'public read must not expose this',
+      createdAt: '2026-06-27T00:00:01.000Z',
+    });
+
+    repo.softDeleteComment(root.id, '2026-06-27T00:00:10.000Z');
+
+    const comment = repo.getComment(root.id);
+    expect(comment).toBeDefined();
+    if (comment === undefined) throw new Error('public comment read missing');
+    expect(isCommentTombstone(comment)).toBe(true);
+    expect((comment as { authorActorId?: string }).authorActorId).toBeUndefined();
+    expect((comment as { content?: string }).content).toBeUndefined();
+  });
+
   it('preserves children of a soft-deleted node (no hard removal, no cascade)', () => {
     const repo = new DomainRepository(db);
     const { ws, human, post } = fixture(repo);
@@ -544,10 +574,9 @@ describe('C1 soft-delete tombstone behavior', () => {
     repo.softDeleteComment(root.id, '2026-06-27T00:00:10.000Z');
 
     // Child is still fully present and live.
-    const childRow = repo.getComment(child.id);
-    expect(childRow).toBeDefined();
-    expect(childRow?.deletedAt).toBeNull();
-    expect(childRow?.content).toBe('surviving child');
+    const childRow = expectLiveComment(repo.getComment(child.id));
+    expect(childRow.deletedAt).toBeNull();
+    expect(childRow.content).toBe('surviving child');
 
     // Subtree fetch returns the deleted parent as a tombstone plus the live child.
     const subtree = repo.getSubtree(root.id);

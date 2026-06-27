@@ -221,6 +221,9 @@ export class DomainRepository {
     if (created === undefined) {
       throw new Error(`createComment: insert of ${input.id} did not persist`);
     }
+    if ('isDeleted' in created) {
+      throw new Error(`createComment: insert of ${input.id} unexpectedly returned a tombstone`);
+    }
     return created;
   }
 
@@ -264,10 +267,17 @@ export class DomainRepository {
     if (created === undefined) {
       throw new Error(`createReply: insert of ${input.id} did not persist`);
     }
+    if ('isDeleted' in created) {
+      throw new Error(`createReply: insert of ${input.id} unexpectedly returned a tombstone`);
+    }
     return created;
   }
 
-  getComment(id: string): CommentNode | undefined {
+  getComment(id: string): CommentView | undefined {
+    return this.getCommentRowAsView(this.getCommentRow(id));
+  }
+
+  private getCommentRow(id: string): CommentNode | undefined {
     const row = this.db
       .prepare(
         `SELECT id, workspace_id AS workspaceId, root_post_id AS rootPostId,
@@ -276,6 +286,21 @@ export class DomainRepository {
          FROM comment_node WHERE id = ?`,
       )
       .get(id) as CommentNode | undefined;
+    return row;
+  }
+
+  private getCommentRowAsView(row: CommentNode | undefined): CommentView | undefined {
+    if (row === undefined) return undefined;
+    if (row.deletedAt !== null) {
+      const tombstone: CommentTombstone = {
+        id: row.id,
+        rootPostId: row.rootPostId,
+        parentId: row.parentId,
+        deletedAt: row.deletedAt,
+        isDeleted: true,
+      };
+      return tombstone;
+    }
     return row;
   }
 
@@ -296,19 +321,7 @@ export class DomainRepository {
    * parent/root linkage, and children (fetched separately).
    */
   getCommentView(id: string): CommentView | undefined {
-    const node = this.getComment(id);
-    if (!node) return undefined;
-    if (node.deletedAt !== null) {
-      const tombstone: CommentTombstone = {
-        id: node.id,
-        rootPostId: node.rootPostId,
-        parentId: node.parentId,
-        deletedAt: node.deletedAt,
-        isDeleted: true,
-      };
-      return tombstone;
-    }
-    return node;
+    return this.getComment(id);
   }
 
   /**
