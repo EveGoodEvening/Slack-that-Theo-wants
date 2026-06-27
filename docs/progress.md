@@ -30,7 +30,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
 
 | Chunk | Status       | Notes |
 | ----- | ------------ | ----- |
-| C0    | not started  | First normal task: stack decision; all downstream chunks wait on C0 completion |
+| C0    | done         | Verified: npm install, test, dev health route, build, lint, typecheck |
 | C1    | not started  | Depends on C0 |
 | C1a   | not started  | Depends on C1; must land before C2/C3 expose endpoints |
 | C2    | not started  | Depends on C1, C1a |
@@ -46,13 +46,13 @@ Rules (mirrored from `docs/implementation-plan.md`):
 
 ## C0 — Product/architecture baseline and scaffold
 
-- [ ] Decide and record the stack (language, framework, persistence, test runner, formatter/linter) in `README.md` or a new `docs/stack-decision.md`
-- [ ] Create package/app manifest with dev/build/test/lint/typecheck scripts
-- [ ] Create source tree skeleton with a minimal health page or API route
-- [ ] Add formatter and linter configuration
-- [ ] Add test runner configuration and a single placeholder-free smoke test that runs
-- [ ] Add `.gitignore` appropriate to the stack
-- [ ] Document the one-command dev and one-command test invocations
+- [x] Decide and record the stack (language, framework, persistence, test runner, formatter/linter) in `README.md` or a new `docs/stack-decision.md`
+- [x] Create package/app manifest with dev/build/test/lint/typecheck scripts
+- [x] Create source tree skeleton with a minimal health page or API route
+- [x] Add formatter and linter configuration
+- [x] Add test runner configuration and a single placeholder-free smoke test that runs
+- [x] Add `.gitignore` appropriate to the stack
+- [x] Document the one-command dev and one-command test invocations
 
 ## C1 — Domain model and persistence migrations
 
@@ -215,3 +215,6 @@ Rules (mirrored from `docs/implementation-plan.md`):
   covers rotation, audit logging, rate-limit/quota enforcement, and related
   migration apply/rollback if persistent security structures are introduced.
   All chunks remain `not started`.
+- 2026-06-27 — Chunk C0: not started -> done — Verified `npm install`,
+  `npm test`, `npm run build`, `npm run lint`, `npm run typecheck`, and
+  `npm run dev` with `GET /health` returning `{ "status": "ok" }`.
