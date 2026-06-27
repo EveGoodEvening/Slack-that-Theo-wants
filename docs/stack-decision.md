@@ -166,3 +166,50 @@ These are recorded here so later chunks do not re-litigate them.
   C4/C5 adapters should map their own post/comment/reply view shapes into this
   narrow input before rendering. Tombstones render a fixed placeholder and never
   reference redacted content. The barrel is `src/rendering/index.ts`.
+
+## C3 decisions (comment/reply API with unlimited nesting)
+
+These are recorded here so later chunks do not re-litigate them.
+
+- **Bump logic reuse:** C3 never reimplements the feed bump. Every comment and
+  reply delegates to `DomainRepository.createComment` / `createReply`, which run
+  the shared C1 `bumpPostLastActivity` helper inside the same transaction as the
+  insert. The endpoint-level bump is therefore the same data-layer guarantee C2
+  relies on; C3 only adds the HTTP surface and boundary checks.
+- **Reply-target context (`replyToActorId`):** the actor being replied to is the
+  parent node's author, derived at read time from the parent's `authorActorId`
+  rather than stored on a separate column. This keeps the C1 adjacency-list
+  schema the single source of truth for the tree and guarantees the target
+  context is always consistent with the live parent. A first-level comment has
+  `replyToActorId: null`. When the parent has been soft-deleted, its author is
+  redacted by the tombstone contract, so the reply's `replyToActorId` is null —
+  the reply itself remains retrievable with its own author/content intact. The
+  field is queryable via the subtree and full-thread endpoints so clients can
+  show "replying to @X" context without clogging the main post.
+- **Deleted-parent behavior:** replies into a soft-deleted subtree are rejected
+  at the API layer (`DeletedParentError` → 409 `deleted_parent`) before reaching
+  the repository; the C1 data-layer trigger
+  `enforce_no_insert_into_deleted_subtree` is the durable backstop. Subtree and
+  full-thread reads return soft-deleted nodes as tombstones (redacted
+  author/content, preserved id/parent/root and `deletedAt`) with their children
+  still retrievable, so the tree structure survives a mid-tree deletion.
+- **Stable sibling ordering:** siblings under the same parent are ordered
+  `createdAt ASC, id ASC`. This is enforced by the repository's recursive-CTE
+  `sort_path` (`created_at || char(31) || id`, joined across levels with
+  `char(30)`) and preserved by the service's `assembleTree`, which groups the
+  depth-first pre-order row stream under each parent without re-sorting.
+- **Subtree vs full thread:** `GET /comments/:id/subtree` returns one subtree
+  rooted at any comment (inclusive of the root). `GET /posts/:postId/thread`
+  returns every first-level comment under a post, each with its subtree
+  assembled. The full-thread endpoint returns C3 tree data only; C2's read-post
+  metadata (total/first-level counts) is unchanged and remains the C2 surface.
+  A soft-deleted post still returns its preserved comment tree (children
+  survive; new replies are blocked by the trigger).
+- **Workspace/group boundary:** every C3 endpoint routes through the C1a
+  `authMiddleware` + `requireRole`, and the service calls `assertCanRead` /
+  `assertCanWrite` against the target's workspace before any read/write. A
+  tombstone target redacts `workspaceId`, so the service derives the workspace
+  from the root post for the boundary check (never leaking whether a
+  cross-workspace node is deleted). `AuthorizationError` is mapped by the
+  shared C1a error handler; C3 not-found errors map to 404 and
+  deleted-parent to 409.
