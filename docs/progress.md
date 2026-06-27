@@ -40,7 +40,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
 | C5    | done         | Verified: npm install, test (171 tests), build, lint, typecheck |
 | C6    | done         | Verified: npm install, test (192 tests), build, lint, typecheck |
 | C7    | done         | Verified: npm install, test (240 tests), build, lint, typecheck |
-| C8    | done         | Verified: npm install, targeted C8 tests (29 tests), full test (244 tests), build, lint, typecheck after review fixes |
+| C8    | done         | Verified: npm install, targeted C8 tests (30 tests), full test (245 tests), build, lint, typecheck after review fixes |
 | C9    | not started  | Depends on C1a, C2, C3, C4, C7 |
 | C10   | not started  | Depends on all core flows |
 
@@ -155,9 +155,9 @@ Rules (mirrored from `docs/implementation-plan.md`):
 - [x] Emit actor-agnostic events from the shared post/comment/reply services on post creation, comment/reply creation, and agent replies (so C7 agent endpoints dispatch through the same event path; C7 remains optional) — implemented in `PostServiceImpl` / `CommentServiceImpl`, with C7 routes sharing those service instances; verified by orchestrator
 - [x] Define a versioned event contract: versioned event names/payloads, producer and consumer dispatch responsibilities (feed vs post-detail handlers), authorization/filtering rules per workspace/group, unknown-event behavior, and compatibility/rollback expectations — `slack.activity.{post,comment,reply}.created.v1` contract implemented and documented; verified by orchestrator
 - [x] Filter realtime events by workspace/group membership via the C1a authorization middleware (no cross-workspace leakage) — `/events` resolves C1a principals and `ActivityEventHub` scopes fan-out by workspace; verified by orchestrator
-- [x] Implement live feed reordering so bumped posts move to the top without refresh — feed EventSource handler fetches server-rendered card fragments and prepends changed posts; executable handler coverage added in `src/ui/feed.test.ts`; verified by orchestrator
+- [x] Implement live feed reordering so bumped posts move to the top without refresh — feed EventSource handler fetches server-rendered card fragments and inserts/replaces changed posts by `lastActivityAt` order; executable handler coverage added in `src/ui/feed.test.ts`; verified by orchestrator
 - [x] Implement live post-detail update for new comments/replies — post-detail EventSource handler fetches and swaps the conversation fragment for matching root posts; executable handler coverage added in `src/ui/postDetail.test.ts`; verified by orchestrator
-- [x] Add integration/E2E tests for the C8 contract — `src/api/activityRoutes.test.ts` covers emitted event types and workspace filtering; executable feed/detail EventSource handler tests cover feed card replacement/reordering, post-detail matching comment/reply swaps, and unrelated/root-mismatched no-ops; verified by orchestrator
+- [x] Add integration/E2E tests for the C8 contract — `src/api/activityRoutes.test.ts` covers emitted event types and workspace filtering; executable feed/detail EventSource handler tests cover feed card replacement/reordering, out-of-order fetch race ordering, post-detail matching comment/reply swaps, and unrelated/root-mismatched no-ops; verified by orchestrator
 
 ## C9 — Auth, workspace boundaries, collaboration base
 
@@ -376,8 +376,9 @@ Rules (mirrored from `docs/implementation-plan.md`):
   queues by dropping activity hints when stream backpressure reports no
   capacity; added executable fake EventSource/fetch/minimal-DOM coverage for
   feed card replacement/reordering and post-detail conversation swaps, including
-  unrelated/root-mismatched events. Orchestrator verified targeted C8 tests
-  (`npm test -- src/api/activityRoutes.test.ts src/ui/feed.test.ts
-  src/ui/postDetail.test.ts`, 29 tests), full `npm test` (244 tests),
-  `npm run build`, `npm run lint`, and `npm run typecheck` after review fixes.
-  C8 is `done`.
+  unrelated/root-mismatched events, then fixed live feed ordering so concurrent
+  fragment fetches resolving out of order still render by activity timestamp.
+  Orchestrator verified targeted C8 tests (`npm test --
+  src/api/activityRoutes.test.ts src/ui/feed.test.ts src/ui/postDetail.test.ts`,
+  30 tests), full `npm test` (245 tests), `npm run build`, `npm run lint`,
+  and `npm run typecheck` after review fixes. C8 is `done`.

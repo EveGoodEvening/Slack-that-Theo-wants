@@ -327,6 +327,7 @@ describe('C4 unsafe HTML/script is escaped/sanitized', () => {
 type FeedRealtimeMessage = { data: string };
 type FeedRealtimeListener = (message: FeedRealtimeMessage) => void;
 type FeedFetchResponse = { ok: boolean; text(): Promise<string> };
+type FeedRealtimePostSeed = string | { postId: string; lastActivityAt?: string };
 
 class FeedRealtimeEventSource {
   static instances: FeedRealtimeEventSource[] = [];
@@ -376,6 +377,17 @@ class FeedRealtimeElement {
   appendChild(child: FeedRealtimeElement): void {
     if (child.parent) child.parent.removeChild(child);
     child.parent = this;
+    this.children.push(child);
+  }
+
+  insertBefore(child: FeedRealtimeElement, referenceChild: FeedRealtimeElement): void {
+    if (child.parent) child.parent.removeChild(child);
+    const index = this.children.indexOf(referenceChild);
+    child.parent = this;
+    if (index >= 0) {
+      this.children.splice(index, 0, child);
+      return;
+    }
     this.children.push(child);
   }
 
@@ -436,10 +448,14 @@ class FeedRealtimeTemplateElement extends FeedRealtimeElement {
   override set innerHTML(value: string) {
     super.innerHTML = value;
     const postId = value.match(/data-post-id="([^"]+)"/)?.[1];
-    this.content.firstElementChild =
-      postId === undefined
-        ? null
-        : new FeedRealtimeElement('article', { 'data-post-id': postId }, value);
+    const lastActivityAt = value.match(/data-last-activity-at="([^"]+)"/)?.[1];
+    if (postId === undefined) {
+      this.content.firstElementChild = null;
+      return;
+    }
+    const attrs: Record<string, string> = { 'data-post-id': postId };
+    if (lastActivityAt !== undefined) attrs['data-last-activity-at'] = lastActivityAt;
+    this.content.firstElementChild = new FeedRealtimeElement('article', attrs, value);
   }
 }
 
@@ -447,11 +463,14 @@ class FeedRealtimeDocument {
   readonly feed = new FeedRealtimeElement('section', { id: 'feed' });
   readonly status = new FeedRealtimeElement('p', { 'data-realtime-status': 'idle' });
 
-  constructor(postIds: string[]) {
-    for (const postId of postIds) {
-      this.feed.appendChild(
-        new FeedRealtimeElement('article', { 'data-post-id': postId }),
-      );
+  constructor(posts: FeedRealtimePostSeed[]) {
+    for (const post of posts) {
+      const postId = typeof post === 'string' ? post : post.postId;
+      const attrs: Record<string, string> = { 'data-post-id': postId };
+      if (typeof post !== 'string' && post.lastActivityAt !== undefined) {
+        attrs['data-last-activity-at'] = post.lastActivityAt;
+      }
+      this.feed.appendChild(new FeedRealtimeElement('article', attrs));
     }
   }
 
@@ -532,6 +551,14 @@ async function flushPromises(): Promise<void> {
   }
 }
 
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 describe('C8 feed realtime progressive enhancement', () => {
   it('executes the SSE handler to replace and move a changed post card to the top', async () => {
     const { humanA, wsA } = twoWorkspaceFixture();
@@ -550,7 +577,10 @@ describe('C8 feed realtime progressive enhancement', () => {
     expect(before.html).toContain(ACTIVITY_EVENT_TYPES.replyCreated);
 
     const script = extractFeedRealtimeScript(before.html);
-    const document = new FeedRealtimeDocument(['new', 'old']);
+    const document = new FeedRealtimeDocument([
+      { postId: 'new', lastActivityAt: '2024-01-02T00:00:00.000Z' },
+      { postId: 'old', lastActivityAt: '2024-01-01T00:00:00.000Z' },
+    ]);
     const fetches = installFeedRealtimeGlobals(document, async (url) => {
       const res = await a.request(url);
       return { ok: res.status === 200, text: () => res.text() };
@@ -578,6 +608,62 @@ describe('C8 feed realtime progressive enhancement', () => {
     const oldAfter = document.postCard('old');
     expect(oldAfter).not.toBe(oldBefore);
     expect(oldAfter.innerHTML).toContain(`datetime="${updated.lastActivityAt}"`);
+    expect(document.status.textContent).toBe('Live updates connected.');
+  });
+
+  it('orders concurrent card fetches by activity timestamp when fragments resolve out of order', async () => {
+    const { humanA, wsA } = twoWorkspaceFixture();
+    const olderActivityAt = '2024-01-02T00:00:00.000Z';
+    const newerActivityAt = '2024-01-03T00:00:00.000Z';
+    seedPost('older', wsA.id, humanA.id, 'older update', olderActivityAt);
+    seedPost('newer', wsA.id, humanA.id, 'newer update', newerActivityAt);
+    const a = app();
+
+    const before = await getFeed(a, humanA.id, wsA.id);
+    expect(before.status).toBe(200);
+    expect(before.html.indexOf('data-post-id="newer"')).toBeLessThan(
+      before.html.indexOf('data-post-id="older"'),
+    );
+
+    const script = extractFeedRealtimeScript(before.html);
+    const olderUrl = '/feed/fragments/posts/older?actorId=humanA&workspaceId=wsA';
+    const newerUrl = '/feed/fragments/posts/newer?actorId=humanA&workspaceId=wsA';
+    const olderFetch = deferred<FeedFetchResponse>();
+    const newerFetch = deferred<FeedFetchResponse>();
+    const document = new FeedRealtimeDocument([
+      { postId: 'newer', lastActivityAt: newerActivityAt },
+      { postId: 'older', lastActivityAt: olderActivityAt },
+    ]);
+    const fetches = installFeedRealtimeGlobals(document, (url) => {
+      if (url === olderUrl) return olderFetch.promise;
+      if (url === newerUrl) return newerFetch.promise;
+      throw new Error(`unexpected feed fragment fetch ${url}`);
+    });
+    const fragmentResponse = async (postId: string): Promise<FeedFetchResponse> => {
+      const res = await a.request(`/feed/fragments/posts/${postId}?actorId=humanA&workspaceId=wsA`);
+      return { ok: res.status === 200, text: () => res.text() };
+    };
+
+    Function(script)();
+    const source = currentFeedEventSource();
+    source.emit(ACTIVITY_EVENT_TYPES.commentCreated, {
+      rootPostId: 'older',
+      rootPostLastActivityAt: olderActivityAt,
+    });
+    source.emit(ACTIVITY_EVENT_TYPES.commentCreated, {
+      rootPostId: 'newer',
+      rootPostLastActivityAt: newerActivityAt,
+    });
+    expect(fetches).toEqual([olderUrl, newerUrl]);
+
+    newerFetch.resolve(await fragmentResponse('newer'));
+    await flushPromises();
+    expect(document.postOrder()).toEqual(['newer', 'older']);
+
+    olderFetch.resolve(await fragmentResponse('older'));
+    await flushPromises();
+
+    expect(document.postOrder()).toEqual(['newer', 'older']);
     expect(document.status.textContent).toBe('Live updates connected.');
   });
 });

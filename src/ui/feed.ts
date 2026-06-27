@@ -62,7 +62,7 @@ function renderPostCard(post: PostDTO, principal: Principal): string {
   const conversationHref = `/feed/${encodeURIComponent(post.id)}?${ACTOR_FIELD}=${encodeURIComponent(
     principal.actorId,
   )}&${WORKSPACE_FIELD}=${encodeURIComponent(principal.workspaceId)}`;
-  return `    <article class="post-card" data-post-id="${escapeText(post.id)}">
+  return `    <article class="post-card" data-post-id="${escapeText(post.id)}" data-last-activity-at="${escapeText(post.lastActivityAt)}">
       <header class="post-meta">
         <span class="post-author">${escapeText(post.authorActorId)}</span>
         <time class="post-activity" datetime="${escapeText(post.lastActivityAt)}">${escapeText(post.lastActivityAt)}</time>
@@ -101,6 +101,48 @@ function renderFeedRealtimeScript(principal: Principal): string {
         if (payload && payload.post && typeof payload.post.id === 'string') return payload.post.id;
         return null;
       }
+      function eventActivityAt(payload) {
+        if (payload && typeof payload.rootPostLastActivityAt === 'string') return payload.rootPostLastActivityAt;
+        if (payload && payload.post && typeof payload.post.lastActivityAt === 'string') return payload.post.lastActivityAt;
+        return null;
+      }
+      function cardPostId(card) {
+        if (!card || typeof card.getAttribute !== 'function') return null;
+        var id = card.getAttribute('data-post-id');
+        return typeof id === 'string' && id.length > 0 ? id : null;
+      }
+      function cardActivityAt(card) {
+        if (!card || typeof card.getAttribute !== 'function') return null;
+        var activityAt = card.getAttribute('data-last-activity-at');
+        if (activityAt) return activityAt;
+        var time = typeof card.querySelector === 'function' ? card.querySelector('time.post-activity') : null;
+        if (!time || typeof time.getAttribute !== 'function') return null;
+        activityAt = time.getAttribute('datetime');
+        return activityAt || null;
+      }
+      function shouldInsertBefore(activityAt, postId, current) {
+        var currentActivityAt = cardActivityAt(current);
+        if (!activityAt || !currentActivityAt) return false;
+        if (activityAt > currentActivityAt) return true;
+        if (activityAt < currentActivityAt) return false;
+        var currentPostId = cardPostId(current);
+        return !!postId && !!currentPostId && postId > currentPostId;
+      }
+      function insertCardByActivity(card, activityAt, postId) {
+        if (!activityAt) {
+          feed.prepend(card);
+          return;
+        }
+        for (var i = 0; i < feed.children.length; i += 1) {
+          var current = feed.children[i];
+          if (!current || cardPostId(current) === null) continue;
+          if (shouldInsertBefore(activityAt, postId, current)) {
+            feed.insertBefore(card, current);
+            return;
+          }
+        }
+        feed.appendChild(card);
+      }
       function upsertPostCard(message) {
         var payload;
         try { payload = JSON.parse(message.data); } catch (_) { return; }
@@ -116,11 +158,16 @@ function renderFeedRealtimeScript(principal: Principal): string {
             template.innerHTML = html.trim();
             var card = template.content.firstElementChild;
             if (!card) return;
+            var activityAt = cardActivityAt(card) || eventActivityAt(payload);
             var existing = feed.querySelector('[data-post-id="' + escapedSelector(postId) + '"]');
-            if (existing) existing.remove();
+            if (existing) {
+              var existingActivityAt = cardActivityAt(existing);
+              if (existingActivityAt && activityAt && existingActivityAt > activityAt) return;
+              existing.remove();
+            }
             var empty = feed.querySelector('.feed-empty');
             if (empty) empty.remove();
-            feed.prepend(card);
+            insertCardByActivity(card, activityAt, postId);
             if (status) status.textContent = 'Live updates connected.';
           })
           .catch(function () {
