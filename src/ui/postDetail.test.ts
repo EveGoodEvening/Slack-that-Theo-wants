@@ -597,14 +597,221 @@ describe('C6 code blocks in the conversation UI', () => {
   });
 });
 
+type PostDetailRealtimeMessage = { data: string };
+type PostDetailRealtimeListener = (message: PostDetailRealtimeMessage) => void;
+type PostDetailFetchResponse = { ok: boolean; text(): Promise<string> };
+
+class PostDetailRealtimeEventSource {
+  static instances: PostDetailRealtimeEventSource[] = [];
+  readonly listeners = new Map<string, PostDetailRealtimeListener[]>();
+
+  constructor(readonly url: string) {
+    PostDetailRealtimeEventSource.instances.push(this);
+  }
+
+  addEventListener(type: string, listener: PostDetailRealtimeListener): void {
+    const listeners = this.listeners.get(type) ?? [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  emit(type: string, payload: unknown): void {
+    for (const listener of this.listeners.get(type) ?? []) {
+      listener({ data: JSON.stringify(payload) });
+    }
+  }
+}
+
+class PostDetailRealtimeElement {
+  readonly tagName: string;
+  readonly attributes = new Map<string, string>();
+  readonly children: PostDetailRealtimeElement[] = [];
+  parent: PostDetailRealtimeElement | null = null;
+  textContent = '';
+  private html = '';
+
+  constructor(tagName: string, attrs: Record<string, string> = {}, html = '') {
+    this.tagName = tagName.toLowerCase();
+    this.html = html;
+    for (const [name, value] of Object.entries(attrs)) {
+      this.attributes.set(name, value);
+    }
+  }
+
+  get innerHTML(): string {
+    return this.html;
+  }
+
+  set innerHTML(value: string) {
+    this.html = value;
+  }
+
+  appendChild(child: PostDetailRealtimeElement): void {
+    if (child.parent) child.parent.removeChild(child);
+    child.parent = this;
+    this.children.push(child);
+  }
+
+  removeChild(child: PostDetailRealtimeElement): void {
+    const index = this.children.indexOf(child);
+    if (index >= 0) this.children.splice(index, 1);
+    child.parent = null;
+  }
+
+  replaceWith(next: PostDetailRealtimeElement): void {
+    const parent = this.parent;
+    if (!parent) return;
+    if (next.parent) next.parent.removeChild(next);
+    const index = parent.children.indexOf(this);
+    if (index < 0) return;
+    next.parent = parent;
+    parent.children[index] = next;
+    this.parent = null;
+  }
+
+  getAttribute(name: string): string | null {
+    return this.attributes.get(name) ?? null;
+  }
+
+  querySelector(selector: string): PostDetailRealtimeElement | null {
+    for (const child of this.children) {
+      if (child.matches(selector)) return child;
+      const nested = child.querySelector(selector);
+      if (nested) return nested;
+    }
+    return null;
+  }
+
+  matches(selector: string): boolean {
+    if (selector === '.conversation') return this.hasClass('conversation');
+    if (selector === '[data-realtime-status]') {
+      return this.getAttribute('data-realtime-status') !== null;
+    }
+    return false;
+  }
+
+  private hasClass(className: string): boolean {
+    return (this.getAttribute('class') ?? '').split(/\s+/).includes(className);
+  }
+}
+
+class PostDetailRealtimeTemplateElement extends PostDetailRealtimeElement {
+  readonly content: { firstElementChild: PostDetailRealtimeElement | null } = {
+    firstElementChild: null,
+  };
+
+  constructor() {
+    super('template');
+  }
+
+  override get innerHTML(): string {
+    return super.innerHTML;
+  }
+
+  override set innerHTML(value: string) {
+    super.innerHTML = value;
+    this.content.firstElementChild = /class="[^"]*conversation[^"]*"/.test(value)
+      ? new PostDetailRealtimeElement('section', { class: 'conversation' }, value)
+      : null;
+  }
+}
+
+class PostDetailRealtimeDocument {
+  readonly root = new PostDetailRealtimeElement('main');
+  readonly status = new PostDetailRealtimeElement('p', { 'data-realtime-status': 'idle' });
+
+  constructor() {
+    this.root.appendChild(
+      new PostDetailRealtimeElement(
+        'section',
+        { class: 'conversation' },
+        '<section class="conversation">stale conversation</section>',
+      ),
+    );
+  }
+
+  querySelector(selector: string): PostDetailRealtimeElement | null {
+    if (selector === '[data-realtime-status]') return this.status;
+    return this.root.querySelector(selector);
+  }
+
+  createElement(tagName: string): PostDetailRealtimeElement {
+    if (tagName.toLowerCase() === 'template') {
+      return new PostDetailRealtimeTemplateElement();
+    }
+    return new PostDetailRealtimeElement(tagName);
+  }
+
+  conversation(): PostDetailRealtimeElement {
+    const conversation = this.root.querySelector('.conversation');
+    expect(conversation).not.toBeNull();
+    if (conversation === null) throw new Error('expected conversation element');
+    return conversation;
+  }
+}
+
+function extractPostDetailRealtimeScript(html: string): string {
+  const marker = '// C8 progressive enhancement: refresh this conversation on scoped activity.';
+  const start = html.indexOf(marker);
+  expect(start).toBeGreaterThanOrEqual(0);
+  if (start < 0) throw new Error('expected post-detail realtime script marker');
+  const script = html.slice(start);
+  const endMarker = '\n    })();';
+  const end = script.indexOf(endMarker);
+  expect(end).toBeGreaterThanOrEqual(0);
+  if (end < 0) throw new Error('expected post-detail realtime script end');
+  return script.slice(0, end + endMarker.length);
+}
+
+function installPostDetailRealtimeGlobals(
+  document: PostDetailRealtimeDocument,
+  fetchResponse: (url: string) => Promise<PostDetailFetchResponse>,
+): string[] {
+  const fetches: string[] = [];
+  PostDetailRealtimeEventSource.instances = [];
+  Object.defineProperty(globalThis, 'document', { value: document, configurable: true });
+  Object.defineProperty(globalThis, 'EventSource', {
+    value: PostDetailRealtimeEventSource,
+    configurable: true,
+  });
+  Object.defineProperty(globalThis, 'fetch', {
+    value: (url: string, _init: unknown) => {
+      fetches.push(url);
+      return fetchResponse(url);
+    },
+    configurable: true,
+  });
+  return fetches;
+}
+
+function currentPostDetailEventSource(): PostDetailRealtimeEventSource {
+  const source = PostDetailRealtimeEventSource.instances[0];
+  expect(source).toBeDefined();
+  if (source === undefined) throw new Error('expected post-detail EventSource');
+  return source;
+}
+
+async function flushPromises(): Promise<void> {
+  for (let i = 0; i < 5; i += 1) {
+    await Promise.resolve();
+  }
+}
+
 describe('C8 post detail realtime progressive enhancement', () => {
-  it('wires scoped comment/reply SSE handlers and exposes a conversation fragment', async () => {
-    const { workspace, ada } = workspaceFixture();
+  it('executes comment/reply handlers only for the matching root post', async () => {
+    const { workspace, ada, bo } = workspaceFixture();
     seedPost(
       'post1',
       workspace.id,
       ada.id,
       'Realtime post',
+      '2024-01-01T00:00:00.000Z',
+    );
+    seedPost(
+      'post2',
+      workspace.id,
+      ada.id,
+      'Other realtime post',
       '2024-01-01T00:00:00.000Z',
     );
     const a = app();
@@ -614,24 +821,60 @@ describe('C8 post detail realtime progressive enhancement', () => {
     expect(detail.html).toContain('/events?actorId=ada&workspaceId=wsA');
     expect(detail.html).toContain(ACTIVITY_EVENT_TYPES.commentCreated);
     expect(detail.html).toContain(ACTIVITY_EVENT_TYPES.replyCreated);
-    expect(detail.html).toContain('current.replaceWith(next);');
 
-    const posted = await postCommentForm(
-      a,
-      'post1',
-      ada.id,
-      workspace.id,
-      'background detail update',
-    );
-    expect(posted.status).toBe(201);
+    const script = extractPostDetailRealtimeScript(detail.html);
+    const document = new PostDetailRealtimeDocument();
+    const fetches = installPostDetailRealtimeGlobals(document, async (url) => {
+      const res = await a.request(url);
+      return { ok: res.status === 200, text: () => res.text() };
+    });
 
-    const fragmentRes = await a.request(
-      `/feed/post1/fragments/conversation?actorId=${ada.id}&workspaceId=${workspace.id}`,
-    );
-    expect(fragmentRes.status).toBe(200);
-    const fragment = await fragmentRes.text();
-    expect(fragment).toContain('class="conversation"');
-    expect(fragment).toContain('background detail update');
-    expect(fragment).toContain('data-realtime-status="idle"');
+    Function(script)();
+    const source = currentPostDetailEventSource();
+    expect(source.url).toBe('/events?actorId=ada&workspaceId=wsA');
+    expect(source.listeners.has(ACTIVITY_EVENT_TYPES.commentCreated)).toBe(true);
+    expect(source.listeners.has(ACTIVITY_EVENT_TYPES.replyCreated)).toBe(true);
+    expect(source.listeners.has(ACTIVITY_EVENT_TYPES.postCreated)).toBe(false);
+    const initialConversation = document.conversation();
+
+    source.emit(ACTIVITY_EVENT_TYPES.postCreated, { rootPostId: 'post1' });
+    source.emit(ACTIVITY_EVENT_TYPES.commentCreated, { rootPostId: 'post2' });
+    await flushPromises();
+    expect(fetches).toEqual([]);
+    expect(document.conversation()).toBe(initialConversation);
+
+    seedComment({
+      id: 'comment-live',
+      workspaceId: workspace.id,
+      rootPostId: 'post1',
+      authorActorId: ada.id,
+      content: 'background detail update',
+      createdAt: '2024-01-02T00:00:00.000Z',
+    });
+    source.emit(ACTIVITY_EVENT_TYPES.commentCreated, { rootPostId: 'post1' });
+    await flushPromises();
+
+    const fragmentUrl = '/feed/post1/fragments/conversation?actorId=ada&workspaceId=wsA';
+    expect(fetches).toEqual([fragmentUrl]);
+    const afterComment = document.conversation();
+    expect(afterComment).not.toBe(initialConversation);
+    expect(afterComment.innerHTML).toContain('background detail update');
+
+    seedReply({
+      id: 'reply-live',
+      workspaceId: workspace.id,
+      rootPostId: 'post1',
+      parentId: 'comment-live',
+      authorActorId: bo.id,
+      content: 'nested realtime reply',
+      createdAt: '2024-01-03T00:00:00.000Z',
+    });
+    source.emit(ACTIVITY_EVENT_TYPES.replyCreated, { rootPostId: 'post1' });
+    await flushPromises();
+
+    expect(fetches).toEqual([fragmentUrl, fragmentUrl]);
+    const afterReply = document.conversation();
+    expect(afterReply).not.toBe(afterComment);
+    expect(afterReply.innerHTML).toContain('nested realtime reply');
   });
 });

@@ -14,6 +14,8 @@ import {
   type ActivityEventSource,
 } from './activityEvents.js';
 
+const ACTIVITY_STREAM_HIGH_WATER_MARK = 16;
+
 /** C8 SSE route dependencies. */
 export interface ActivityRouteDeps {
   membership: MembershipRepository;
@@ -48,20 +50,31 @@ export function activityRoutes(deps: ActivityRouteDeps): Hono<{
 
     const encoder = new TextEncoder();
     let unsubscribe = (): void => {};
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        const write = (chunk: string): void => {
-          controller.enqueue(encoder.encode(chunk));
-        };
-        write(': c8-connected\n\n');
-        unsubscribe = deps.events.subscribe(principal, (event) => {
-          write(serializeActivitySse(event));
-        });
+    const stream = new ReadableStream<Uint8Array>(
+      {
+        start(controller) {
+          const write = (chunk: string): void => {
+            if (controller.desiredSize === null || controller.desiredSize <= 0) {
+              // Activity events are hints; drop instead of accumulating
+              // unbounded per-subscriber memory for a slow client.
+              return;
+            }
+            controller.enqueue(encoder.encode(chunk));
+          };
+          write(': c8-connected\n\n');
+          unsubscribe = deps.events.subscribe(principal, (event) => {
+            write(serializeActivitySse(event));
+          });
+        },
+        cancel() {
+          unsubscribe();
+        },
       },
-      cancel() {
-        unsubscribe();
+      {
+        highWaterMark: ACTIVITY_STREAM_HIGH_WATER_MARK,
+        size: () => 1,
       },
-    });
+    );
 
     return new Response(stream, {
       headers: {
