@@ -185,9 +185,8 @@ Rules (mirrored from `docs/implementation-plan.md`):
 
 ## Known blockers / deferred items
 
-- **C0 stack decision:** No stack chosen yet. Stack selection is the first
-  normal C0 task (not an external blocker); all downstream chunks wait on C0
-  completion.
+- **C0 stack decision:** Resolved — see `docs/stack-decision.md`. C0 is done;
+  downstream chunks may proceed per their dependency ordering.
 - **Slack cross-company federation:** Strategically important
   (`README.md:7`) but unspecified. Deferred to post-MVP roadmap.
 - **Notifications, search, moderation (including hard delete):** Unspecified in
@@ -218,3 +217,8 @@ Rules (mirrored from `docs/implementation-plan.md`):
 - 2026-06-27 — Chunk C0: not started -> done — Verified `npm install`,
   `npm test`, `npm run build`, `npm run lint`, `npm run typecheck`, and
   `npm run dev` with `GET /health` returning `{ "status": "ok" }`.
+- 2026-06-27 — Chunk C0: review fixes applied. Removed unverified manifest
+  scripts (`start`, `test:watch`, `format`, `check`); dev server now binds to
+  loopback (`127.0.0.1`) by default with `HOST=0.0.0.0` opt-in and logs the
+  actual bound host; cleared the stale C0 stack-decision blocker (resolved via
+  `docs/stack-decision.md`). C0 remains `done`.

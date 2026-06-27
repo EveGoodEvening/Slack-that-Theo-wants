@@ -35,15 +35,23 @@ TypeScript (strict) on Node.js 20+, with Hono as the web framework, Vitest as th
 Requires Node.js 20.11+ and npm.
 
 ```bash
-npm install     # install dependencies (fresh checkout)
-npm run dev     # start the dev server with live reload (http://localhost:3000)
-npm test        # run the test suite once
-npm run build   # compile TypeScript to dist/
-npm run lint    # lint with Biome
+npm install        # install dependencies (fresh checkout)
+npm run dev        # start the dev server with live reload (http://127.0.0.1:3000)
+npm test           # run the test suite once
+npm run build      # compile TypeScript to dist/
+npm run lint       # lint with Biome
 npm run typecheck  # typecheck with tsc --noEmit
 ```
 
-Health check: `GET http://localhost:3000/health` returns `{ "status": "ok", ... }`.
+The dev server binds to loopback (`127.0.0.1`) by default so it is not exposed
+on every network interface. To allow connections from other hosts (for example
+remote or container dev), opt in explicitly:
+
+```bash
+HOST=0.0.0.0 npm run dev
+```
+
+Health check: `GET http://127.0.0.1:3000/health` returns `{ "status": "ok", ... }`.
 
 ## Project status
 

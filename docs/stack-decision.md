@@ -49,5 +49,9 @@
 ## Verification mapping (C0)
 
 - `npm install` then `npm test` runs the smoke test on a fresh checkout.
-- `npm run dev` starts the server; `GET /health` responds with `status: "ok"`.
+- `npm run dev` starts the server bound to loopback (`127.0.0.1` by default;
+  `HOST=0.0.0.0` opts in to all-interface binding); `GET /health` responds with
+  `status: "ok"`.
 - `npm run build`, `npm run lint`, `npm run typecheck` each exit clean.
+- Only `dev`, `build`, `test`, `lint`, and `typecheck` are declared; no other
+  scripts are declared until a later chunk verifies them.

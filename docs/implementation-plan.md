@@ -636,9 +636,8 @@ and developer/agent documentation.
 
 ## Known blockers / deferred items
 
-- **Stack decision (C0):** No stack is chosen yet. Stack selection is the first
-  normal C0 task (not an external blocker); all downstream chunks wait on C0
-  completion.
+- **Stack decision (C0):** Resolved — see `docs/stack-decision.md`. C0 is done;
+  downstream chunks proceed per their dependency ordering.
 - **Slack cross-company federation:** Strategically important per
   `README.md:7` but unspecified. Deferred to post-MVP roadmap.
 - **Notifications, search, moderation (including hard delete):** Unspecified in
