@@ -35,7 +35,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
 | C1a   | done         | Verified: npm install, test (65 tests), build, lint, typecheck |
 | C2    | not started  | Depends on C1, C1a |
 | C3    | not started  | Depends on C1, C1a |
-| C3a   | not started  | Depends on C0; prerequisite for C4/C5 |
+| C3a   | done         | Verified: npm install, test (107 tests), build, lint, typecheck |
 | C4    | not started  | Depends on C2, C3a |
 | C5    | not started  | Depends on C3, C4, C3a |
 | C6    | not started  | Depends on C3a, C4, C5 |
@@ -100,10 +100,10 @@ Rules (mirrored from `docs/implementation-plan.md`):
 
 ## C3a — Safe content rendering baseline
 
-- [ ] Choose and record rendering strategy (markdown library, rich-text, or custom)
-- [ ] Implement safe HTML sanitization/escaping (no script execution) for post/comment/reply content
-- [ ] Provide a reusable render function/component consumed by C4 and C5
-- [ ] Add tests: injected `<script>`/unsafe HTML does not execute through the renderer; content is escaped/sanitized on every render path
+- [x] Choose and record rendering strategy (markdown library, rich-text, or custom) — custom Markdown-subset allowlisting renderer; recorded in docs/stack-decision.md (C3a decisions); src/rendering/render.ts
+- [x] Implement safe HTML sanitization/escaping (no script execution) for post/comment/reply content — escape all user text; scheme-allowlist links; drop unsafe schemes; restrict code-block lang hints; src/rendering/render.ts
+- [x] Provide a reusable render function/component consumed by C4 and C5 — renderContent + renderPostContent(PostView) + renderCommentContent(CommentView, surface); barrel src/rendering/index.ts
+- [x] Add tests: injected `<script>`/unsafe HTML does not execute through the renderer; content is escaped/sanitized on every render path — src/rendering/render.test.ts verified by orchestrator
 
 ## C4 — Minimal human UI: feed and post creation
 
@@ -260,3 +260,15 @@ Rules (mirrored from `docs/implementation-plan.md`):
 - 2026-06-27 — Chunk C1a: in progress -> done — Orchestrator verified
   `npm install`, `npm test` (65 tests), `npm run build`, `npm run lint`, and
   `npm run typecheck` after gate and review fixes; C1a remains `done`.
+- 2026-06-27 — Chunk C3a: not started -> in progress — Implementation
+  complete in worktree `chunk/C3a`. Rendering strategy: custom Markdown-subset
+  allowlisting renderer (no DOM dependency, fully auditable), recorded in
+  docs/stack-decision.md. Added src/rendering/render.ts (renderContent core
+  sanitizer + renderPostContent/renderCommentContent surface helpers over C1
+  PostView/CommentView, with tombstone placeholders) and barrel
+  src/rendering/index.ts. Tests in src/rendering/render.test.ts cover script /
+  iframe / img-onerror / svg payloads, javascript:/data:/vbscript: link
+  rejection, control-char scheme hiding, attribute quote-breakout, code-block
+  lang-hint injection, post/comment/reply surfaces, tombstones, and a
+  cross-surface invariant that no render path emits unescaped stored content.
+  Gate fixes applied for strict TypeScript and Biome regex lint; orchestrator verified `npm install`, `npm test` (107 tests), `npm run build`, `npm run lint`, and `npm run typecheck`. C3a is `done`.
