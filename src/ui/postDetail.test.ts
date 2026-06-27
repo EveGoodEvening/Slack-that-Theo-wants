@@ -797,6 +797,20 @@ async function flushPromises(): Promise<void> {
   }
 }
 
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(reason?: unknown): void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = (value: T) => resolvePromise(value);
+    reject = (reason?: unknown) => rejectPromise(reason);
+  });
+  return { promise, resolve, reject };
+}
+
 describe('C8 post detail realtime progressive enhancement', () => {
   it('executes comment/reply handlers only for the matching root post', async () => {
     const { workspace, ada, bo } = workspaceFixture();
@@ -876,5 +890,66 @@ describe('C8 post detail realtime progressive enhancement', () => {
     const afterReply = document.conversation();
     expect(afterReply).not.toBe(afterComment);
     expect(afterReply.innerHTML).toContain('nested realtime reply');
+  });
+
+  it('ignores a stale conversation fragment when matching post-detail fetches resolve out of order', async () => {
+    const { workspace, ada } = workspaceFixture();
+    seedPost(
+      'post1',
+      workspace.id,
+      ada.id,
+      'Realtime stale-race post',
+      '2024-01-01T00:00:00.000Z',
+    );
+    const a = app();
+    const detail = await getPostDetail(a, 'post1', ada.id, workspace.id);
+    expect(detail.status).toBe(200);
+
+    const script = extractPostDetailRealtimeScript(detail.html);
+    const document = new PostDetailRealtimeDocument();
+    const olderFetch = deferred<PostDetailFetchResponse>();
+    const newerFetch = deferred<PostDetailFetchResponse>();
+    const pendingFetches = [olderFetch, newerFetch];
+    const fetches = installPostDetailRealtimeGlobals(document, () => {
+      const next = pendingFetches.shift();
+      expect(next).toBeDefined();
+      if (next === undefined) throw new Error('unexpected post-detail fragment fetch');
+      return next.promise;
+    });
+
+    Function(script)();
+    const source = currentPostDetailEventSource();
+    const fragmentUrl = '/feed/post1/fragments/conversation?actorId=ada&workspaceId=wsA';
+    const olderActivityAt = '2024-01-02T00:00:00.000Z';
+    const newerActivityAt = '2024-01-03T00:00:00.000Z';
+
+    source.emit(ACTIVITY_EVENT_TYPES.commentCreated, {
+      rootPostId: 'post1',
+      rootPostLastActivityAt: olderActivityAt,
+    });
+    source.emit(ACTIVITY_EVENT_TYPES.replyCreated, {
+      rootPostId: 'post1',
+      rootPostLastActivityAt: newerActivityAt,
+    });
+
+    expect(fetches).toEqual([fragmentUrl, fragmentUrl]);
+
+    newerFetch.resolve({
+      ok: true,
+      text: async () => '<section class="conversation">newer conversation with latest reply</section>',
+    });
+    await flushPromises();
+    const afterNewer = document.conversation();
+    expect(afterNewer.innerHTML).toContain('newer conversation with latest reply');
+
+    olderFetch.resolve({
+      ok: true,
+      text: async () => '<section class="conversation">stale older conversation</section>',
+    });
+    await flushPromises();
+
+    expect(document.conversation()).toBe(afterNewer);
+    expect(document.conversation().innerHTML).toContain('newer conversation with latest reply');
+    expect(document.conversation().innerHTML).not.toContain('stale older conversation');
   });
 });

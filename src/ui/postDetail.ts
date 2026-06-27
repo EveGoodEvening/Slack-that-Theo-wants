@@ -235,16 +235,29 @@ function renderPostDetailRealtimeScript(postId: string, principal: Principal): s
       var source = new EventSource(${JSON.stringify(eventUrl)});
       var postId = ${JSON.stringify(postId)};
       var eventTypes = ${eventTypes};
+      var latestRefreshToken = 0;
+      var latestActivityAt = null;
+      function eventActivityAt(payload) {
+        if (payload && typeof payload.rootPostLastActivityAt === 'string') return payload.rootPostLastActivityAt;
+        return null;
+      }
       function refreshConversation(message) {
         var payload;
         try { payload = JSON.parse(message.data); } catch (_) { return; }
         if (!payload || payload.rootPostId !== postId) return;
+        var activityAt = eventActivityAt(payload);
+        if (activityAt && latestActivityAt && activityAt < latestActivityAt) return;
+        if (activityAt && (!latestActivityAt || activityAt > latestActivityAt)) latestActivityAt = activityAt;
+        var refreshToken = ++latestRefreshToken;
+        var refreshActivityAt = activityAt || latestActivityAt;
         fetch(${JSON.stringify(fragmentUrl)}, { headers: { Accept: 'text/html' } })
           .then(function (response) {
             if (!response.ok) throw new Error('conversation fragment fetch failed');
             return response.text();
           })
           .then(function (html) {
+            if (refreshToken !== latestRefreshToken) return;
+            if (refreshActivityAt && latestActivityAt && refreshActivityAt < latestActivityAt) return;
             var template = document.createElement('template');
             template.innerHTML = html.trim();
             var next = template.content.firstElementChild;
@@ -252,6 +265,7 @@ function renderPostDetailRealtimeScript(postId: string, principal: Principal): s
             if (next && current) current.replaceWith(next);
           })
           .catch(function () {
+            if (refreshToken !== latestRefreshToken) return;
             var status = document.querySelector('[data-realtime-status]');
             if (status) status.textContent = 'Live updates paused; refresh to catch up.';
           });
