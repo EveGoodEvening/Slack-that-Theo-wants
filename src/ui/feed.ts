@@ -1,7 +1,9 @@
+import { CODE_BLOCK_CSS, COPY_CODE_SCRIPT, PREVIEW_SCRIPT } from './codeBlockUi.js';
 import { Hono } from 'hono';
 import type { MembershipRepository } from '../security/membership.js';
 import { AuthorizationError, type Principal } from '../security/types.js';
 import {
+  renderContent,
   renderPostContent,
   type RenderableContent,
 } from '../rendering/index.js';
@@ -112,6 +114,7 @@ function renderFeedDocument(
     .feed-error { color: #b00; }
     .feed-notice { color: #060; }
     .is-loading { opacity: 0.6; }
+${CODE_BLOCK_CSS}
   </style>
 </head>
 <body>
@@ -127,6 +130,8 @@ ${noticeBlock}
     <input type="hidden" name="${ACTOR_FIELD}" value="${escapeText(principal.actorId)}" />
     <input type="hidden" name="${WORKSPACE_FIELD}" value="${escapeText(principal.workspaceId)}" />
     <button type="submit">Post</button>
+    <button type="button" class="preview-toggle" data-preview-for="content" aria-pressed="false">Preview</button>
+    <div class="composer-preview" data-preview-for="content"></div>
     <noscript><p class="feed-loading">Submitting…</p></noscript>
   </form>
   <section class="feed" id="feed" aria-live="polite">
@@ -145,6 +150,8 @@ ${body}
         if (feed) feed.setAttribute('aria-busy', 'true');
       });
     })();
+${COPY_CODE_SCRIPT}
+${PREVIEW_SCRIPT}
   </script>
 </body>
 </html>`;
@@ -301,6 +308,51 @@ export function feedRoutes(deps: FeedRouteDeps): Hono {
       renderFeedDocument(posts, principal, { notice: 'Post created.' }),
       201,
     );
+  });
+
+  // POST /feed/preview — C6 authoring preview. Renders the raw composer text
+  // through the same C3a sanitizing renderer as live content and returns the
+  // safe HTML fragment. The composer preview toggle POSTs here; the response
+  // is inserted into a preview pane. No stored content is touched, so this is
+  // a pure render of untrusted input — sanitization is identical to live
+  // posts. Principal resolution is required to keep the surface consistent
+  // with the C1a authorization baseline.
+  route.post('/preview', async (c) => {
+    const form = await c.req.formData().catch(() => null);
+    const content = form?.get('content');
+    const actorField = form?.get(ACTOR_FIELD);
+    const workspaceField = form?.get(WORKSPACE_FIELD);
+    const actorHeaderField = form?.get(ACTOR_HEADER_FIELD);
+    const workspaceHeaderField = form?.get(WORKSPACE_HEADER_FIELD);
+    const bodyParams: Record<string, string | undefined> = {
+      [ACTOR_FIELD]: typeof actorField === 'string' ? actorField : undefined,
+      [WORKSPACE_FIELD]:
+        typeof workspaceField === 'string' ? workspaceField : undefined,
+      [ACTOR_HEADER_FIELD]:
+        typeof actorHeaderField === 'string' ? actorHeaderField : undefined,
+      [WORKSPACE_HEADER_FIELD]:
+        typeof workspaceHeaderField === 'string'
+          ? workspaceHeaderField
+          : undefined,
+    };
+    // Resolve the same C1a principal as a live submit; the value is only
+    // needed for the authorization gate (preview touches no stored data).
+    try {
+      resolveUiPrincipal(c.req, bodyParams, membership);
+    } catch (err) {
+      if (err instanceof AuthorizationError) {
+        return c.html(
+          `<p class="feed-error" role="alert">${escapeText(err.message)} (code: ${escapeText(err.code)})</p>`,
+          err.status as 401 | 403,
+        );
+      }
+      throw err;
+    }
+    if (typeof content !== 'string') {
+      return c.html('<p class="feed-error">content must be a string</p>', 400);
+    }
+    // Pure sanitizing render of untrusted input — identical to live posts.
+    return c.html(renderContent(content), 200);
   });
 
   return route;

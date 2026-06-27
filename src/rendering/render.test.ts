@@ -22,20 +22,53 @@ const deletedComment: RenderableContent = { isDeleted: true };
 //
 // Escaped text may legitimately contain the literal characters "onerror=" or
 // "javascript:" as visible, non-executable bytes (e.g. `&lt;img onerror=...&gt;`).
-// So this helper checks the two vectors that actually execute:
+// So this helper checks the vectors that actually execute:
 //   1. No live dangerous element tag (every user `<` is escaped by the
 //      renderer; the only live tags are the fixed set the renderer emits).
-//   2. No dangerous scheme inside an emitted `href="..."` attribute.
+//      C6 extends the renderer's emitted set with `figure`, `button` (the copy
+//      affordance), and `span` (highlight tokens) — these cannot execute
+//      script on their own, so they are excluded from the tag list and
+//      instead covered by the event-handler check below.
+//   2. No event-handler attribute (`on*=`) on any live tag — the real vector
+//      for a user-injected `<button onclick=…>` or `<span onload=…>`.
+//   3. No dangerous scheme inside an emitted `href="..."` attribute.
 const DANGEROUS_TAG =
-  /<(script|iframe|img|svg|object|embed|style|meta|link|base|form|input|button|video|marquee|details)\b/i;
+  /<(script|iframe|img|svg|object|embed|style|meta|link|base|form|input|video|marquee|details)\b/i;
 const DANGEROUS_SCHEME = /(javascript|vbscript|data:text\/html):/i;
+const LIVE_EVENT_HANDLER = /<[^>]+\son\w+\s*=/i;
 
 function expectNoExecutableScript(html: string): void {
   expect(html).not.toMatch(DANGEROUS_TAG);
+  expect(html).not.toMatch(LIVE_EVENT_HANDLER);
   const hrefs = [...html.matchAll(/href="([^"]*)"/gi)].map((m) => m[1] ?? '');
   for (const href of hrefs) {
     expect(href).not.toMatch(DANGEROUS_SCHEME);
   }
+}
+
+function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+function stripTags(html: string): string {
+  return decodeHtmlEntities(html.replace(/<[^>]*>/g, ''));
+}
+
+function firstCodeBlockText(html: string): string {
+  const match = /<pre><code(?: class="[^"]+")?>([\s\S]*?)<\/code><\/pre>/.exec(html);
+  expect(match).not.toBeNull();
+  return stripTags(match?.[1] ?? '');
+}
+
+function firstCodeBlockHtml(html: string): string {
+  const match = /<pre><code(?: class="[^"]+")?>([\s\S]*?)<\/code><\/pre>/.exec(html);
+  expect(match).not.toBeNull();
+  return match?.[1] ?? '';
 }
 
 // ---------------------------------------------------------------------------
@@ -361,5 +394,145 @@ describe('C3a renderContent — edge inputs', () => {
     const html = renderContent('[x](javascript:alert(1))');
     expectNoExecutableScript(html);
     expect(html).toContain('x');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C6 — fenced code block rendering: highlighting, copy affordance, formatting
+// ---------------------------------------------------------------------------
+
+describe('C6 renderContent — fenced code blocks render as code with highlighting', () => {
+  it('wraps a fenced code block in a figure with a copy button and highlighted code', () => {
+    const html = renderContent('```ts\nconst x = 1;\n```');
+    expect(html).toMatch(/<figure class="code-block" data-lang="ts">/);
+    expect(html).toMatch(/<pre><code class="language-ts">/);
+    expect(html).toContain('<button class="copy-code" type="button" aria-label="Copy code">Copy</button>');
+    // The keyword `const` is wrapped in a highlight span with a fixed class.
+    expect(html).toContain('<span class="tok-keyword">const</span>');
+    // The number `1` is wrapped in a number token span.
+    expect(html).toContain('<span class="tok-number">1</span>');
+  });
+
+  it('preserves code formatting (indentation and newlines) inside <pre>', () => {
+    const code = 'function f() {\n  if (true) {\n    return [1, 2];\n  }\n}';
+    const html = renderContent(`\`\`\`js\n${code}\n\`\`\``);
+    const renderedCode = firstCodeBlockText(html);
+    expect(renderedCode).toBe(code);
+    expect(html).toContain('<span class="tok-keyword">function</span>');
+    expect(html).toContain('<span class="tok-keyword">return</span>');
+    expect(html).toContain('<span class="tok-literal">true</span>');
+  });
+
+  it('renders an unrecognized language as plain escaped code with formatting intact', () => {
+    const html = renderContent('```rust\nfn main() {\n  let x = 42;\n}\n```');
+    expect(html).toMatch(/<figure class="code-block" data-lang="rust">/);
+    expect(html).toMatch(/<pre><code class="language-rust">/);
+    // No highlight spans for an unrecognized language — just escaped text.
+    expect(html).not.toMatch(/<span class="tok-/);
+    // Formatting is preserved verbatim.
+    expect(html).toContain('fn main() {\n');
+    expect(html).toContain('  let x = 42;');
+  });
+
+  it('renders a fenced block with no language hint as plain code with a copy button', () => {
+    const html = renderContent('```\nplain code\n```');
+    expect(html).toMatch(/<figure class="code-block" data-lang="code">/);
+    expect(html).toMatch(/<pre><code>/);
+    expect(html).toContain('plain code');
+    expect(html).toContain('class="copy-code"');
+  });
+
+  it('highlights comments, strings, and punctuation tokens', () => {
+    const html = renderContent('```ts\n// comment\nconst s = "hi";\n```');
+    expect(html).toContain('<span class="tok-comment">// comment</span>');
+    expect(html).toContain('<span class="tok-string">&quot;hi&quot;</span>');
+    expect(html).toContain('<span class="tok-punct">;</span>');
+  });
+});
+
+describe('C6 — code formatting preserved in nested replies', () => {
+  it('renders a fenced code block on the reply surface with formatting intact', () => {
+    const reply = liveComment('```js\nconst n = 100;\nconsole.log(n);\n```');
+    const result = renderCommentContent(reply, 'reply');
+    expect(result.surface).toBe('reply');
+    expect(result.isTombstone).toBe(false);
+    expect(result.html).toMatch(/<pre><code class="language-js">/);
+    const renderedCode = firstCodeBlockText(result.html);
+    expect(renderedCode).toBe('const n = 100;\nconsole.log(n);');
+    expect(result.html).toContain('<span class="tok-keyword">const</span>');
+    expect(result.html).toContain('class="copy-code"');
+  });
+
+  it('preserves multi-line indentation through the comment surface', () => {
+    const comment = liveComment('```\n  line one\n    line two\n```');
+    const result = renderCommentContent(comment, 'comment');
+    expect(firstCodeBlockText(result.html)).toBe('  line one\n    line two');
+  });
+
+  it('renders a fenced code block nested inside a blockquote reply', () => {
+    // A code fence inside a blockquote exercises the recursive renderBlocks
+    // path; the code block must still be highlighted and wrapped.
+    const reply = liveComment('> ```ts\n> const x = 1;\n> ```');
+    const result = renderCommentContent(reply, 'reply');
+    expect(result.html).toContain('<blockquote>');
+    expect(result.html).toMatch(/<figure class="code-block"/);
+    expect(result.html).toContain('<span class="tok-keyword">const</span>');
+  });
+});
+
+describe('C6 — code-block content is still sanitized', () => {
+  it('escapes a <script> tag inside a fenced code block so it cannot execute', () => {
+    const html = renderContent('```\n<script>alert(1)</script>\n```');
+    expectNoExecutableScript(html);
+    const codeHtml = firstCodeBlockHtml(html);
+    expect(codeHtml).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    expect(codeHtml).not.toMatch(/<script[\s>]/i);
+  });
+
+  it('escapes an <img onerror> payload inside a highlighted code block', () => {
+    const html = renderContent('```ts\nconst i = "<img src=x onerror=alert(1)>";\n```');
+    expectNoExecutableScript(html);
+    // The payload is inside a string token, escaped, with no live img tag.
+    const codeHtml = firstCodeBlockHtml(html);
+    expect(codeHtml).toContain('&lt;img src=x onerror=alert(1)&gt;');
+    expect(codeHtml).not.toMatch(/<img[\s>]/i);
+    // No event-handler attribute is emitted on any live tag.
+    expect(codeHtml).not.toMatch(/<[^>]+\son\w+\s*=/i);
+  });
+
+  it('does not emit event handlers on the copy button or highlight spans', () => {
+    const html = renderContent('```ts\nconst x = 1;\n```');
+    // The copy button and figure carry only fixed, safe attributes.
+    expect(html).toMatch(/<button class="copy-code" type="button" aria-label="Copy code">Copy<\/button>/);
+    // Highlight spans carry only a class attribute from the fixed allowlist.
+    const spans = [...html.matchAll(/<span class="(tok-[a-z]+)">/g)].map((m) => m[1] ?? '');
+    for (const cls of spans) {
+      expect(cls).toMatch(/^tok-(comment|string|number|keyword|literal|punct)$/);
+    }
+  });
+
+  it('rejects a language hint that would inject markup into the class or data-lang', () => {
+    const html = renderContent('```"><script>alert(1)</script>\nfoo\n```');
+    expectNoExecutableScript(html);
+    // Unsafe hint dropped: no language class, data-lang falls back to "code".
+    expect(html).toMatch(/<figure class="code-block" data-lang="code">/);
+    expect(html).toMatch(/<pre><code>/);
+    expect(html).not.toMatch(/language-/);
+  });
+
+  it('sanitizes code-block content on every render surface', () => {
+    const payload = '```\n<script>alert(1)</script>\n```';
+    for (const html of [
+      renderContent(payload),
+      renderPostContent(livePost(payload)).html,
+      renderCommentContent(liveComment(payload), 'comment').html,
+      renderCommentContent(liveComment(payload), 'reply').html,
+    ]) {
+      const codeHtml = firstCodeBlockHtml(html);
+      expectNoExecutableScript(html);
+      expect(codeHtml).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+      expect(codeHtml).not.toMatch(/<script[\s>]/i);
+      expect(html).toContain('class="copy-code"');
+    }
   });
 });

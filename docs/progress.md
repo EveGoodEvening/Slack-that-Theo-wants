@@ -38,7 +38,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
 | C3a   | done         | Verified: npm install, test (109 tests), build, lint, typecheck |
 | C4    | done         | Verified: npm install, test (163 tests), build, lint, typecheck |
 | C5    | done         | Verified: npm install, test (171 tests), build, lint, typecheck |
-| C6    | not started  | Depends on C3a, C4, C5 |
+| C6    | done         | Verified: npm install, test (189 tests), build, lint, typecheck |
 | C7    | not started  | Depends on C1, C1a, C2, C3 |
 | C8    | not started  | Depends on C1a, C2, C3, C4, C5 (optionally C7) |
 | C9    | not started  | Depends on C1a, C2, C3, C4, C7 |
@@ -130,10 +130,10 @@ Rules (mirrored from `docs/implementation-plan.md`):
 
 ## C6 — Code block / message authoring experience
 
-- [ ] Implement fenced code block rendering with syntax highlighting and copy affordance (on top of the C3a renderer)
-- [ ] Ensure code formatting is preserved inside nested replies
-- [ ] Add optional preview mode if desired
-- [ ] Add tests: code fences render as code, code formatting preserved in nested replies, code-block content is still sanitized (defense-in-depth via C3a)
+- [x] Implement fenced code block rendering with syntax highlighting and copy affordance (on top of the C3a renderer) — `renderCodeBlock` now wraps fenced code in `<figure class="code-block">` with a `<pre><code>` body, dependency-free token highlighting (`src/rendering/highlight.ts`), and a copy `<button>`; verified by orchestrator
+- [x] Ensure code formatting is preserved inside nested replies — the C5 `renderCommentContent` → `renderContent` → `renderBlocks` → `renderCodeBlock` path preserves indentation/newlines verbatim; highlighted spans wrap escaped text only; verified by orchestrator
+- [x] Add optional preview mode — `POST /feed/preview` renders raw composer text through `renderContent`; composer preview toggle in feed + post detail; verified by orchestrator
+- [x] Add tests: code fences render as code, code formatting preserved in nested replies, code-block content is still sanitized (defense-in-depth via C3a) — added in `src/rendering/render.test.ts` and `src/ui/postDetail.test.ts`; verified by orchestrator
 
 ## C7 — Agent identity and API control plane
 
@@ -305,3 +305,9 @@ Rules (mirrored from `docs/implementation-plan.md`):
   `npm test` (163 tests), `npm run build`, `npm run lint`, and
   `npm run typecheck`. C4 is `done`.
 - 2026-06-27 — Chunk C5: not started -> done — Implemented server-rendered post detail UI at `/feed/:postId`, first-level comments, nested replies, reply composers, reply-target context, deep-tree collapse/safeguard, shared UI principal helpers, C3a rendering for comment/reply surfaces, index mount, and C5 UI tests for correct reply placement, feed bump after replying to an old post, nested sanitization, deep-tree safeguard, cross-post reply rejection, and first-level composer. Orchestrator verified `npm install`, `npm test` (171 tests), `npm run build`, `npm run lint`, and `npm run typecheck` after review fixes. C5 is `done`.
+- 2026-06-27 — Chunk C6: not started -> done — Implemented dependency-free
+  fenced code highlighting, copy affordance, sanitized preview endpoint, and
+  code-block CSS/scripts on top of the C3a renderer; preserved formatting in
+  nested replies and kept code-block content escaped/sanitized. Orchestrator
+  verified `npm install`, `npm test` (189 tests), `npm run build`,
+  `npm run lint`, and `npm run typecheck` after test fixes. C6 is `done`.
