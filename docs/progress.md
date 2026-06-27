@@ -36,7 +36,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
 | C2    | done         | Verified: npm install, test (132 tests), build, lint, typecheck |
 | C3    | done         | Verified: npm install, test (151 tests), build, lint, typecheck |
 | C3a   | done         | Verified: npm install, test (109 tests), build, lint, typecheck |
-| C4    | not started  | Depends on C2, C3a |
+| C4    | done         | Verified: npm install, test (163 tests), build, lint, typecheck |
 | C5    | not started  | Depends on C3, C4, C3a |
 | C6    | not started  | Depends on C3a, C4, C5 |
 | C7    | not started  | Depends on C1, C1a, C2, C3 |
@@ -107,14 +107,14 @@ Rules (mirrored from `docs/implementation-plan.md`):
 
 ## C4 — Minimal human UI: feed and post creation
 
-- [ ] Implement feed/landing view consuming the C2 list-feed endpoint
-- [ ] Render post cards ordered by API response order (do not re-sort client-side)
-- [ ] Render all post content through the C3a safe renderer/sanitizer (never render raw stored content)
-- [ ] Implement create-post form calling the C2 create endpoint
-- [ ] Add loading, error, and empty states
-- [ ] Add component or E2E test proving creating a post appears in the feed
-- [ ] Add test proving feed ordering follows the API order
-- [ ] Add test proving unsafe HTML/script in post content is escaped/sanitized on the feed and post-creation surfaces (via the C3a renderer)
+- [x] Implement feed/landing view consuming the C2 list-feed endpoint — src/ui/feed.ts GET /feed over PostService.listFeed; mounted in src/index.ts
+- [x] Render post cards ordered by API response order (do not re-sort client-side) — posts rendered in service.listFeed order; verified by feed.test.ts ordering tests
+- [x] Render all post content through the C3a safe renderer/sanitizer (never render raw stored content) — renderPostContent on every post body in src/ui/feed.ts
+- [x] Implement create-post form calling the C2 create endpoint — POST /feed form calls PostService.createPost then re-renders
+- [x] Add loading, error, and empty states — empty/error/notice blocks + progressive-enhancement loading indicator in src/ui/feed.ts
+- [x] Add component or E2E test proving creating a post appears in the feed — src/ui/feed.test.ts "creates a post via the form and it appears at the top of the feed"
+- [x] Add test proving feed ordering follows the API order — src/ui/feed.test.ts "renders posts in API response order" + "does not re-sort"
+- [x] Add test proving unsafe HTML/script in post content is escaped/sanitized on the feed and post-creation surfaces (via the C3a renderer) — src/ui/feed.test.ts "C4 unsafe HTML/script is escaped/sanitized" suite
 
 ## C5 — Conversation UI: first-level comments and nested replies
 
@@ -289,3 +289,18 @@ Rules (mirrored from `docs/implementation-plan.md`):
   orchestrator verified `npm install`, `npm test` (151 tests),
   `npm run build`, `npm run lint`, and `npm run typecheck` after type and
   review fixes. C3 is `done`.
+- 2026-06-27 — Chunk C4: not started -> done — Implementation
+  complete in worktree `chunk/C4`. Added server-rendered feed UI in
+  `src/ui/feed.ts` (GET /feed consumes C2 PostService.listFeed in API order;
+  every post body routed through C3a renderPostContent; POST /feed create-post
+  form calls PostService.createPost then re-renders; empty/error/notice/loading
+  states). Mounted at /feed in src/index.ts. Principal resolution reuses the
+  C1a membership-validation core via headers, query params, or form fields.
+  Tests in src/ui/feed.test.ts cover create-post-appears-in-feed, feed
+  ordering follows API order (including a bumped older post), and unsafe
+  HTML/script escaping on feed and post-creation surfaces. Gate fixes removed
+  root-mounted JSON auth interception for /feed, aligned browser form principal
+  fields with C1a validation, adjusted escaped-HTML assertions, and mapped
+  write-scope denials to 403 HTML errors. Orchestrator verified `npm install`,
+  `npm test` (163 tests), `npm run build`, `npm run lint`, and
+  `npm run typecheck`. C4 is `done`.
