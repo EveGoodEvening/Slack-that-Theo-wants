@@ -94,12 +94,21 @@ ${renderPrincipalFields(principal)}
       </form>`;
 }
 
-function descendantCount(node: CommentTreeNode): number {
+const HIDDEN_DESCENDANT_COUNT_LIMIT = 100;
+
+function cappedDescendantCount(node: CommentTreeNode): { count: number; capped: boolean } {
   let count = 0;
-  for (const child of node.children) {
-    count += 1 + descendantCount(child);
+  const pending = [...node.children];
+  while (pending.length > 0) {
+    const next = pending.pop();
+    if (next === undefined) continue;
+    count += 1;
+    if (count >= HIDDEN_DESCENDANT_COUNT_LIMIT) {
+      return { count, capped: pending.length > 0 || next.children.length > 0 };
+    }
+    pending.push(...next.children);
   }
-  return count;
+  return { count, capped: false };
 }
 
 function renderChildren(
@@ -115,7 +124,9 @@ function renderChildren(
   if (renderDepth >= COLLAPSE_DEPTH) {
     return `      <details class="reply-branch" open>
         <summary>${children.length} nested ${children.length === 1 ? 'reply' : 'replies'}</summary>
+        <ol class="reply-list">
 ${rendered}
+        </ol>
       </details>`;
   }
   return `      <ol class="reply-list">
@@ -146,8 +157,13 @@ function renderCommentNode(
     : renderReplyComposer(postId, node.id, node.authorActorId, principal);
   let children: string;
   if (renderDepth >= MAX_RENDER_DEPTH) {
-    const hiddenDescendants = descendantCount(tree);
-    children = `      <p class="reply-depth-safeguard">${hiddenDescendants} deeper ${hiddenDescendants === 1 ? 'reply is' : 'replies are'} collapsed to keep this page readable.</p>`;
+    if (tree.children.length === 0) {
+      children = '';
+    } else {
+      const hiddenDescendants = cappedDescendantCount(tree);
+      const hiddenLabel = `${hiddenDescendants.count}${hiddenDescendants.capped ? '+' : ''}`;
+      children = `      <p class="reply-depth-safeguard">${hiddenLabel} deeper ${hiddenDescendants.count === 1 && !hiddenDescendants.capped ? 'reply is' : 'replies are'} collapsed to keep this page readable.</p>`;
+    }
   } else {
     children = renderChildren(tree.children, postId, principal, renderDepth);
   }
@@ -445,6 +461,19 @@ export function postDetailRoutes(deps: PostDetailRouteDeps): Hono {
     }
 
     try {
+      const parent = commentService.getComment({ principal, commentId: parentId });
+      if (parent.rootPostId !== postId) {
+        return c.html(
+          renderCurrentState({
+            principal,
+            postId,
+            postService,
+            commentService,
+            error: 'reply parent does not belong to this post',
+          }),
+          409,
+        );
+      }
       commentService.createReply({ principal, parentId, content });
       return c.html(
         renderCurrentState({

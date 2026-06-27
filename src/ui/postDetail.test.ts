@@ -250,6 +250,49 @@ describe('C5 post detail conversation rendering', () => {
     expect(beta.html).toMatch(/Replying to <span>@cy<\/span>[\s\S]*Reply under beta/);
   });
 
+  it('rejects a reply parent from a different route post without creating or bumping', async () => {
+    const { workspace, ada, bo } = workspaceFixture();
+    seedPost('post-a', workspace.id, ada.id, 'Route post', '2026-01-01T00:00:00.000Z');
+    seedPost('post-b', workspace.id, ada.id, 'Parent post', '2026-02-01T00:00:00.000Z');
+    seedComment({
+      id: 'comment-b',
+      workspaceId: workspace.id,
+      rootPostId: 'post-b',
+      authorActorId: bo.id,
+      content: 'Parent on another post',
+      createdAt: '2026-02-01T00:01:00.000Z',
+    });
+    const postBBefore = domain.getPost('post-b');
+    expect(postBBefore).toBeDefined();
+    if (postBBefore === undefined || 'isDeleted' in postBBefore) {
+      throw new Error('post-b missing before rejected reply');
+    }
+    const postBLastActivityBeforeRejectedReply = postBBefore.lastActivityAt;
+
+    const response = await postReplyForm(
+      app(),
+      'post-a',
+      'comment-b',
+      ada.id,
+      workspace.id,
+      '<b>cross-post reply</b>',
+    );
+    const postBAfter = domain.getPost('post-b');
+
+    expect(response.status).toBe(409);
+    expect(response.html).toContain('reply parent does not belong to this post');
+    expect(response.html).not.toContain('Reply added.');
+    expect(response.html).not.toContain('&lt;b&gt;cross-post reply&lt;/b&gt;');
+    expect(domain.countCommentsForPost('post-a')).toBe(0);
+    expect(domain.countCommentsForPost('post-b')).toBe(1);
+    expect(domain.getSubtree('comment-b')).toHaveLength(1);
+    expect(postBAfter).toBeDefined();
+    if (postBAfter === undefined || 'isDeleted' in postBAfter) {
+      throw new Error('post-b missing after rejected reply');
+    }
+    expect(postBAfter.lastActivityAt).toBe(postBLastActivityBeforeRejectedReply);
+  });
+
   it('a reply on an old post bumps that post to the top of the feed', async () => {
     const { workspace, ada, bo } = workspaceFixture();
     seedPost('old-post', workspace.id, ada.id, 'Old post', '2026-01-01T00:00:00.000Z');
@@ -340,7 +383,7 @@ describe('C5 post detail conversation rendering', () => {
       createdAt: '2026-01-01T00:01:00.000Z',
     });
     let parentId = 'comment-0';
-    for (let depth = 1; depth <= 10; depth += 1) {
+    for (let depth = 1; depth <= 150; depth += 1) {
       const id = `reply-${depth}`;
       seedReply({
         id,
@@ -349,7 +392,7 @@ describe('C5 post detail conversation rendering', () => {
         parentId,
         authorActorId: ada.id,
         content: `Depth ${depth}`,
-        createdAt: `2026-01-01T00:${String(depth + 1).padStart(2, '0')}:00.000Z`,
+        createdAt: `2026-01-01T00:00:00.${String(depth).padStart(3, '0')}Z`,
       });
       parentId = id;
     }
@@ -357,8 +400,44 @@ describe('C5 post detail conversation rendering', () => {
     const { html } = await getPostDetail(app(), 'post-1', ada.id, workspace.id);
 
     expect(html).toContain('reply-depth-safeguard');
-    expect(html).toContain('deeper replies are collapsed');
-    expect(html).toContain('<details class="reply-branch" open>');
+    expect(html).toContain('100+ deeper replies are collapsed');
+    expect(html).not.toContain('0 deeper replies are collapsed');
+    expect(html).toMatch(
+      /<details class="reply-branch" open>[\s\S]*<ol class="reply-list">[\s\S]*<\/ol>[\s\S]*<\/details>/,
+    );
+  });
+
+  it('does not show the depth safeguard when a max-depth leaf has no hidden children', async () => {
+    const { workspace, ada, bo } = workspaceFixture();
+    seedPost('post-1', workspace.id, ada.id, 'Root post', '2026-01-01T00:00:00.000Z');
+    seedComment({
+      id: 'comment-0',
+      workspaceId: workspace.id,
+      rootPostId: 'post-1',
+      authorActorId: bo.id,
+      content: 'Depth zero',
+      createdAt: '2026-01-01T00:01:00.000Z',
+    });
+    let parentId = 'comment-0';
+    for (let depth = 1; depth <= 8; depth += 1) {
+      const id = `reply-${depth}`;
+      seedReply({
+        id,
+        workspaceId: workspace.id,
+        rootPostId: 'post-1',
+        parentId,
+        authorActorId: ada.id,
+        content: `Depth ${depth}`,
+        createdAt: `2026-01-01T00:00:00.${String(depth).padStart(3, '0')}Z`,
+      });
+      parentId = id;
+    }
+
+    const { html } = await getPostDetail(app(), 'post-1', ada.id, workspace.id);
+
+    expect(html).toContain('Depth 8');
+    expect(html).not.toContain('<p class="reply-depth-safeguard">');
+    expect(html).not.toContain('0 deeper replies are collapsed');
   });
 
   it('creates a first-level comment through the post detail composer', async () => {

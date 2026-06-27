@@ -37,7 +37,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
 | C3    | done         | Verified: npm install, test (151 tests), build, lint, typecheck |
 | C3a   | done         | Verified: npm install, test (109 tests), build, lint, typecheck |
 | C4    | done         | Verified: npm install, test (163 tests), build, lint, typecheck |
-| C5    | done         | Verified: npm install, test (169 tests), build, lint, typecheck |
+| C5    | done         | Verified: npm install, test (171 tests), build, lint, typecheck |
 | C6    | not started  | Depends on C3a, C4, C5 |
 | C7    | not started  | Depends on C1, C1a, C2, C3 |
 | C8    | not started  | Depends on C1a, C2, C3, C4, C5 (optionally C7) |
@@ -304,4 +304,4 @@ Rules (mirrored from `docs/implementation-plan.md`):
   write-scope denials to 403 HTML errors. Orchestrator verified `npm install`,
   `npm test` (163 tests), `npm run build`, `npm run lint`, and
   `npm run typecheck`. C4 is `done`.
-- 2026-06-27 — Chunk C5: not started -> done — Implemented server-rendered post detail UI at `/feed/:postId`, first-level comments, nested replies, reply composers, reply-target context, deep-tree collapse/safeguard, shared UI principal helpers, C3a rendering for comment/reply surfaces, index mount, and C5 UI tests for correct reply placement, feed bump after replying to an old post, nested sanitization, deep-tree safeguard, and first-level composer. Orchestrator verified `npm install`, `npm test` (169 tests), `npm run build`, `npm run lint`, and `npm run typecheck`. C5 is `done`.
+- 2026-06-27 — Chunk C5: not started -> done — Implemented server-rendered post detail UI at `/feed/:postId`, first-level comments, nested replies, reply composers, reply-target context, deep-tree collapse/safeguard, shared UI principal helpers, C3a rendering for comment/reply surfaces, index mount, and C5 UI tests for correct reply placement, feed bump after replying to an old post, nested sanitization, deep-tree safeguard, cross-post reply rejection, and first-level composer. Orchestrator verified `npm install`, `npm test` (171 tests), `npm run build`, `npm run lint`, and `npm run typecheck` after review fixes. C5 is `done`.
