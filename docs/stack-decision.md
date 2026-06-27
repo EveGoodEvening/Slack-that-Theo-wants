@@ -338,3 +338,72 @@ These are recorded here so later chunks do not re-litigate them.
   feed and C5 post-detail documents, avoiding duplication. They contain no user
   content and no template interpolation.
 
+
+## C7 decisions (agent identity and API control plane)
+
+These are recorded here so later chunks do not re-litigate them.
+
+- **Agent identity reuse:** C7 does NOT redefine the C1 actor schema. Agent
+  identity reuses the existing `actor` table with `kind = 'agent'`; there is no
+  separate bot-message table. Agent-specific profile/metadata fields
+  (description, status, capabilities) live in a new `agent_profile` table
+  (migration 0003) keyed 1:1 by `actor_id`, guarded by a trigger that rejects a
+  profile row referencing a non-agent actor. This keeps the C1 actor schema the
+  single source of truth for actor polymorphism.
+- **Credential storage:** agent API tokens are stored HASHED (scrypt + per-
+  credential random salt, format `saltHex$hashHex`) in `agent_credential`. The
+  plaintext secret is NEVER persisted; it is returned exactly once at issuance
+  and rotation and is never retrievable again. Verification scans active
+  credentials and compares in constant time (`timingSafeEqual`). A credential
+  is workspace-scoped via the actor's workspace (composite FK to
+  `actor(workspace_id, id)`), so a credential cannot reference an actor in
+  another workspace.
+- **Credential lifecycle:** issuance creates a new active credential row and
+  returns the one-time secret. Rotation issues a new credential and revokes all
+  prior active credentials for the actor (old secret rejected on subsequent
+  verify). Revocation flips `status` to 'revoked' (single credential or all
+  active credentials for an actor). Only hashed material is retained.
+- **Principal resolution (agent):** `resolveAgentPrincipal` maps an
+  `Authorization: Bearer <secret>` header to a `Principal` by verifying the
+  secret against the hashed credential table and resolving the actor's
+  membership. This produces the same C1a `Principal` shape as the stubbed
+  header resolver, so the shared C1a authorization middleware and per-resource
+  `assertCanRead`/`assertCanWrite` checks apply unchanged to agent callers. C9
+  replaces credential verification with real sign-in-backed tokens while
+  keeping the Principal shape.
+- **Audit logging:** every agent create-post/comment/reply action appends a
+  row to `agent_audit_log` (actor, workspace, action, target id, root post id,
+  idempotency key, timestamp). The log is append-only and read by the agent's
+  own audit endpoint and later admin tooling (C9+).
+- **Rate limit / quota:** a per-(actor, bucket) counter in `agent_quota_state`
+  enforces a rolling-window write quota. The bucket key encodes the window
+  (default per-minute). `checkAndConsume` atomically increments only when under
+  the limit; excess writes throw `QuotaExceededError` (mapped to 429) BEFORE the
+  write occurs, so no duplicate write and no extra feed bump is created when the
+  limit is exceeded.
+- **Idempotency:** agent writes accept an `x-idempotency-key` header. The key
+  is scoped per (actor, action) and stored in `agent_idempotency_key` with the
+  resulting target id and a SHA-256 request digest. A replayed write with the
+  same key returns the original target (re-read via the C2/C3 read path)
+  without re-performing the write — so no duplicate row and no second feed
+  bump. This is the durable backstop for retry/replay safety on agent create
+  calls.
+- **Write-safety contract:** `AgentService.writeWithIdempotency` layers
+  idempotency + quota + audit on top of the existing C2 `PostService` and C3
+  `CommentService`. The shared C1 bump helper is reused unchanged (agent
+  replies bump posts exactly as human replies do); C7 never reimplements bump
+  logic.
+- **Machine-readable status metadata:** `GET /agents/status` and
+  `GET /agents/status/:postId` expose a priority/status metadata contract:
+  per-post `lastActivityAt`, `replyCount`, `firstLevelCount`, `status`, and
+  `authorKind` (human | agent), ordered by activity (`lastActivityAt DESC,
+  postId DESC` — the same order as the human feed). Agents infer priorities
+  from activity + counts + actor type without scraping UI text.
+- **Least-privilege / redaction:** all agent read endpoints delegate to the C2
+  `PostService.listFeed` / `readPost` and C3 `CommentService` methods, which
+  scope by the principal's workspace before ordering/pagination. Cross-
+  workspace posts/comments are excluded; tombstones are redacted. No cross-
+  workspace leakage is possible through the agent surface.
+- **HTTP surface:** agent endpoints are mounted under `/agents` and use the
+  agent Bearer-token middleware (not the C1a header middleware). C2/C3 human
+  endpoints remain unchanged under `/posts` and `/comments`.

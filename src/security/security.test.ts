@@ -568,7 +568,7 @@ describe('C1a baseline membership model', () => {
 
 describe('C1a membership migration', () => {
   it('applies migration 0002 alongside migration 0001 on a fresh database', () => {
-    expect(appliedMigrations(db)).toEqual([1, 2]);
+    expect(appliedMigrations(db)).toEqual([1, 2, 3]);
     const tables = db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
       .all() as { name: string }[];

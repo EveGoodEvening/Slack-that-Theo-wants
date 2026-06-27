@@ -1,4 +1,4 @@
-// C2 post feed + C3 comment/reply API surface.
+// C2 post feed + C3 comment/reply + C7 agent control-plane API surface.
 
 export {
   DEFAULT_FEED_LIMIT,
@@ -29,3 +29,14 @@ export {
   type SubtreeResult,
 } from './commentService.js';
 export { commentRoutes, type CommentRouteDeps } from './commentRoutes.js';
+
+export {
+  AgentService,
+  IDEMPOTENCY_HEADER,
+  type AgentAuditEntry,
+  type AgentServiceDeps,
+  type AgentStatusPage,
+  type AgentWriteResult,
+  type PostStatusEntry,
+} from './agentService.js';
+export { agentRoutes, type AgentRouteDeps } from './agentRoutes.js';
