@@ -4,4 +4,4 @@
 // C4/C5 import from here and must never render raw stored content.
 
 export { renderCommentContent, renderContent, renderPostContent } from './render.js';
-export type { ContentSurface, RenderedContent } from './render.js';
+export type { ContentSurface, RenderableContent, RenderedContent } from './render.js';

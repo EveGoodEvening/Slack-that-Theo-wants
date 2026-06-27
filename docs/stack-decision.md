@@ -157,10 +157,12 @@ These are recorded here so later chunks do not re-litigate them.
   before scheme parsing. Fenced-code language hints are restricted to a safe
   class-name charset.
 - **Reusable API:** `renderContent` is the single sanitizing entry point over
-  a content string. `renderPostContent(post: PostView)` and
-  `renderCommentContent(node: CommentView, surface)` accept the C1 domain
-  view types (live or tombstone) and return a `RenderedContent` (`{ surface,
-  html, isTombstone }`). C4 and C5 must route every post/comment/reply body
-  through these and must never interpolate raw stored content. Tombstones
-  render a fixed placeholder and never reference the redacted content. The
-  barrel is `src/rendering/index.ts`.
+  a content string. `renderPostContent(input)` and
+  `renderCommentContent(input, surface)` accept renderer-owned narrow inputs:
+  `{ content: string }` for live post/comment/reply content or
+  `{ isDeleted: true }` for a tombstone/deleted marker. They return a
+  `RenderedContent` (`{ surface, html, isTombstone }`). C3a intentionally
+  depends only on C0 and does not import C1 domain view types or predicates;
+  C4/C5 adapters should map their own post/comment/reply view shapes into this
+  narrow input before rendering. Tombstones render a fixed placeholder and never
+  reference redacted content. The barrel is `src/rendering/index.ts`.

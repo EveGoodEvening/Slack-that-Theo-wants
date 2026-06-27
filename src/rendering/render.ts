@@ -21,12 +21,21 @@
  * must not bypass `renderContent`. C4/C5 consume `renderPostContent` /
  * `renderCommentContent` and must never render raw stored content.
  */
-import {
-  type CommentView,
-  type PostView,
-  isCommentTombstone,
-  isPostTombstone,
-} from '../domain/types.js';
+
+export interface LiveRenderableContent {
+  readonly content: string;
+  readonly isDeleted?: false;
+}
+
+export interface DeletedRenderableContent {
+  readonly isDeleted: true;
+}
+
+export type RenderableContent = LiveRenderableContent | DeletedRenderableContent;
+
+function isDeletedRenderableContent(source: RenderableContent): source is DeletedRenderableContent {
+  return source.isDeleted === true;
+}
 
 /**
  * The kind of content surface a render call is for. Used only for telemetry /
@@ -73,6 +82,7 @@ const ALLOWED_URL_SCHEMES: Record<string, true> = {
   'https:': true,
   'mailto:': true,
 };
+const MAX_BLOCKQUOTE_DEPTH = 16;
 
 /**
  * Sanitize a link destination. Returns the URL safe to emit in an `href`
@@ -324,7 +334,7 @@ function findUnescaped(text: string, from: number, ch: string): number {
  * Raw HTML lines (starting with `<`) are treated as paragraph text and
  * escaped by `renderInline`; they never become live elements.
  */
-function renderBlocks(source: string): string {
+function renderBlocks(source: string, blockquoteDepth = 0): string {
   const lines = source.replace(/\r\n?/g, '\n').split('\n');
   const out: string[] = [];
   let i = 0;
@@ -365,14 +375,21 @@ function renderBlocks(source: string): string {
       continue;
     }
 
-    // Blockquote (consecutive `>` lines).
+    // Blockquote (consecutive `>` lines). Recursion is capped so a line with
+    // thousands of leading markers cannot exhaust the call stack; excess
+    // markers render as escaped paragraph text inside the deepest allowed quote.
     if (/^>\s?/.test(line)) {
       const quoteLines: string[] = [];
       while (i < lines.length && /^>\s?/.test(lines[i] as string)) {
-        quoteLines.push((lines[i] as string).replace(/^>\s?/, ''));
+        quoteLines.push(lines[i] as string);
         i += 1;
       }
-      out.push(`<blockquote>${renderBlocks(quoteLines.join('\n'))}</blockquote>`);
+      if (blockquoteDepth >= MAX_BLOCKQUOTE_DEPTH) {
+        out.push(`<p>${quoteLines.map(renderInline).join(' ')}</p>`);
+      } else {
+        const inner = quoteLines.map((quoteLine) => quoteLine.replace(/^>\s?/, '')).join('\n');
+        out.push(`<blockquote>${renderBlocks(inner, blockquoteDepth + 1)}</blockquote>`);
+      }
       continue;
     }
 
@@ -400,9 +417,9 @@ function renderBlocks(source: string): string {
 
     // Paragraph: consume until blank line or a block starter. Render each
     // line through renderInline, then join: a line ending in two trailing
-    // spaces is a hard break (<br>); otherwise a soft break (space). The
-    // <br> is inserted between already-rendered fragments so it is never
-    // passed through escapeHtml.
+    // spaces or a backslash is a hard break (<br>); otherwise a soft break
+    // (space). The <br> is inserted between already-rendered fragments so it
+    // is never passed through escapeHtml.
     const paraLines: string[] = [];
     while (
       i < lines.length &&
@@ -416,9 +433,18 @@ function renderBlocks(source: string): string {
       paraLines.push(lines[i] as string);
       i += 1;
     }
-    const fragments = paraLines.map((ln) => {
-      const hardBreak = / {2}$/.test(ln);
-      const rendered = renderInline(ln.replace(/ {2}$/, ''));
+    const fragments = paraLines.map((ln, index) => {
+      let inline = ln;
+      let hardBreak = false;
+      const hasFollowingLine = index < paraLines.length - 1;
+      if (hasFollowingLine && inline.endsWith('\\')) {
+        hardBreak = true;
+        inline = inline.slice(0, -1);
+      } else if (hasFollowingLine && / {2}$/.test(inline)) {
+        hardBreak = true;
+        inline = inline.replace(/ {2}$/, '');
+      }
+      const rendered = renderInline(inline);
       return { rendered, hardBreak };
     });
     let paraHtml = '';
@@ -503,30 +529,31 @@ export function renderContent(content: string): string {
 }
 
 /**
- * Render a post surface. Accepts a live `Post` or a `PostTombstone`; when the
+ * Render a post surface. Accepts renderer-owned narrow input: either live
+ * content (`{ content }`) or a deleted marker (`{ isDeleted: true }`). When the
  * post is soft-deleted, a fixed tombstone placeholder is returned and the
  * (redacted) content is never rendered. C4 must route every post body through
  * this function.
  */
-export function renderPostContent(post: PostView): RenderedContent {
-  if (isPostTombstone(post)) {
+export function renderPostContent(post: RenderableContent): RenderedContent {
+  if (isDeletedRenderableContent(post)) {
     return { surface: 'post', html: TOMBSTONE_HTML.post, isTombstone: true };
   }
   return { surface: 'post', html: renderContent(post.content), isTombstone: false };
 }
 
 /**
- * Render a comment or reply surface. Accepts a live `CommentNode` or a
- * `CommentTombstone`; when the node is soft-deleted, a fixed tombstone
- * placeholder is returned. C5 must route every first-level comment and every
- * nested reply through this function — replies are comments at depth, so one
- * function covers both surfaces and the `surface` discriminator records which.
+ * Render a comment or reply surface. Accepts renderer-owned narrow input:
+ * either live content (`{ content }`) or a deleted marker (`{ isDeleted: true }`).
+ * C5 must route every first-level comment and every nested reply through this
+ * function — replies are comments at depth, so one function covers both
+ * surfaces and the `surface` discriminator records which.
  */
 export function renderCommentContent(
-  node: CommentView,
+  node: RenderableContent,
   surface: Extract<ContentSurface, 'comment' | 'reply'>,
 ): RenderedContent {
-  if (isCommentTombstone(node)) {
+  if (isDeletedRenderableContent(node)) {
     return { surface, html: TOMBSTONE_HTML.comment, isTombstone: true };
   }
   return { surface, html: renderContent(node.content), isTombstone: false };

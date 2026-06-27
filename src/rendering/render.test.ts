@@ -1,54 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import type { CommentNode, CommentTombstone, Post, PostTombstone } from '../domain/types.js';
-import {
-  renderCommentContent,
-  renderContent,
-  renderPostContent,
-} from './index.js';
+import type { RenderableContent } from './index.js';
+import { renderCommentContent, renderContent, renderPostContent } from './index.js';
 
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
 
-function livePost(content: string): Post {
-  return {
-    id: 'post-1',
-    workspaceId: 'ws-1',
-    authorActorId: 'actor-1',
-    content,
-    createdAt: '2026-06-27T00:00:00.000Z',
-    lastActivityAt: '2026-06-27T00:00:00.000Z',
-    deletedAt: null,
-  };
+function livePost(content: string): RenderableContent {
+  return { content };
 }
 
-const deletedPost: PostTombstone = {
-  id: 'post-1',
-  workspaceId: 'ws-1',
-  deletedAt: '2026-06-27T00:00:00.000Z',
-  isDeleted: true,
-};
+const deletedPost: RenderableContent = { isDeleted: true };
 
-function liveComment(content: string): CommentNode {
-  return {
-    id: 'comment-1',
-    workspaceId: 'ws-1',
-    rootPostId: 'post-1',
-    parentId: null,
-    authorActorId: 'actor-2',
-    content,
-    createdAt: '2026-06-27T00:00:00.000Z',
-    deletedAt: null,
-  };
+function liveComment(content: string): RenderableContent {
+  return { content };
 }
 
-const deletedComment: CommentTombstone = {
-  id: 'comment-1',
-  rootPostId: 'post-1',
-  parentId: null,
-  deletedAt: '2026-06-27T00:00:00.000Z',
-  isDeleted: true,
-};
+const deletedComment: RenderableContent = { isDeleted: true };
 
 // Helper: assert no executable script surface survives in rendered HTML.
 //
@@ -241,6 +209,13 @@ describe('C3a renderContent — markdown subset', () => {
     expect(html).toContain('quoted');
   });
 
+  it('caps blockquote nesting and renders excess markers as escaped text', () => {
+    const html = renderContent(`${'>'.repeat(128)} quoted`);
+    expect(html).toContain('quoted');
+    expect((html.match(/<blockquote>/g) ?? []).length).toBeLessThanOrEqual(16);
+    expect(html).toContain('&gt;');
+  });
+
   it('renders an unordered list', () => {
     const html = renderContent('- a\n- b');
     expect(html).toContain('<ul>');
@@ -256,7 +231,13 @@ describe('C3a renderContent — markdown subset', () => {
 
   it('renders a hard line break from two trailing spaces', () => {
     const html = renderContent('line one  \nline two');
-    expect(html).toContain('<br>');
+    expect(html).toContain('line one<br>line two');
+  });
+
+  it('renders a hard line break from a trailing backslash', () => {
+    const html = renderContent('line one\\\nline two');
+    expect(html).toContain('line one<br>line two');
+    expect(html).not.toContain('line one\\');
   });
 
   it('escapes ampersands and quotes in text', () => {
@@ -301,11 +282,7 @@ describe('C3a renderCommentContent — comment and reply surfaces', () => {
   });
 
   it('renders a nested reply through sanitization on the same path', () => {
-    const reply: CommentNode = {
-      ...liveComment('<script>alert(1)</script> reply'),
-      id: 'reply-1',
-      parentId: 'comment-1',
-    };
+    const reply = liveComment('<script>alert(1)</script> reply');
     const result = renderCommentContent(reply, 'reply');
     expect(result.surface).toBe('reply');
     expect(result.isTombstone).toBe(false);
@@ -321,11 +298,7 @@ describe('C3a renderCommentContent — comment and reply surfaces', () => {
   });
 
   it('renders a tombstone placeholder for a soft-deleted reply', () => {
-    const deletedReply: CommentTombstone = {
-      ...deletedComment,
-      id: 'reply-1',
-      parentId: 'comment-1',
-    };
+    const deletedReply: RenderableContent = { isDeleted: true };
     const result = renderCommentContent(deletedReply, 'reply');
     expect(result.isTombstone).toBe(true);
     expect(result.surface).toBe('reply');
@@ -353,7 +326,7 @@ describe('C3a — all render paths sanitize', () => {
   });
 
   it('renderCommentContent sanitizes the raw payload on the reply surface', () => {
-    const reply: CommentNode = { ...liveComment(payload), parentId: 'comment-1' };
+    const reply = liveComment(payload);
     expectNoExecutableScript(renderCommentContent(reply, 'reply').html);
   });
 
@@ -363,7 +336,7 @@ describe('C3a — all render paths sanitize', () => {
       renderContent(payload),
       renderPostContent(livePost(payload)).html,
       renderCommentContent(liveComment(payload), 'comment').html,
-      renderCommentContent({ ...liveComment(payload), parentId: 'c' }, 'reply').html,
+      renderCommentContent(liveComment(payload), 'reply').html,
     ]) {
       expect(html).not.toContain('<script>');
       expect(html).not.toContain('<script ');
