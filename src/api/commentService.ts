@@ -227,9 +227,15 @@ export class CommentServiceImpl implements CommentService {
     // Boundary first: the principal may only write in the parent's workspace.
     // A tombstone parent redacts workspaceId, so derive it from the root post.
     assertCanWrite(input.principal, commentWorkspaceId(parent, this.repo));
-    // Deleted-parent behavior: reject replies into a soft-deleted subtree at
-    // the API layer. The data-layer trigger is the durable backstop.
+    // Deleted-parent behavior: reject replies into any soft-deleted subtree at
+    // the API layer. The data-layer trigger is the durable backstop, but the
+    // service preserves the C3 DeletedParentError/409 contract for descendants
+    // below tombstoned ancestors and deleted root posts.
+    if (isDeletedSubtree(parent, this.repo)) {
+      throw new DeletedParentError(input.parentId);
+    }
     if (isCommentTombstone(parent)) {
+      // Unreachable after isDeletedSubtree, but keeps the live-parent projection typed.
       throw new DeletedParentError(input.parentId);
     }
     // The reply target is the parent's author. The parent is live here, so its
@@ -260,9 +266,10 @@ export class CommentServiceImpl implements CommentService {
     const workspaceId = commentWorkspaceId(root, this.repo);
     assertCanRead(input.principal, workspaceId);
     const rows = this.repo.getSubtree(input.commentId);
+    const externalParentAuthors = rootExternalParentAuthorById(root, this.repo);
     // rows is depth-first, sorted by sort_path which encodes
     // createdAt ASC, id ASC at every sibling level. Assemble into a tree.
-    const tree = assembleTree(rows);
+    const tree = assembleTree(rows, externalParentAuthors);
     if (tree === undefined) {
       // Defensive: root existed above, so the subtree query must return it.
       throw new CommentNotFoundError(input.commentId);
@@ -315,6 +322,54 @@ function commentWorkspaceId(view: CommentView, repo: DomainRepository): string {
     throw new CommentNotFoundError(view.rootPostId);
   }
   return post.workspaceId;
+}
+
+/**
+ * Return true when `view` is inside a deleted subtree: the root post is
+ * tombstoned, the node itself is a tombstone, or any ancestor comment is a
+ * tombstone. Used before createReply so API callers see DeletedParentError
+ * instead of the repository trigger's raw SQLite error.
+ */
+function isDeletedSubtree(view: CommentView, repo: DomainRepository): boolean {
+  const post = repo.getPost(view.rootPostId);
+  if (post === undefined) {
+    throw new CommentNotFoundError(view.rootPostId);
+  }
+  if (isPostTombstone(post) || isCommentTombstone(view)) {
+    return true;
+  }
+
+  let parentId = view.parentId;
+  while (parentId !== null) {
+    const ancestor = repo.getComment(parentId);
+    if (ancestor === undefined) {
+      throw new CommentNotFoundError(parentId);
+    }
+    if (isCommentTombstone(ancestor)) {
+      return true;
+    }
+    parentId = ancestor.parentId;
+  }
+  return false;
+}
+
+/**
+ * Seed reply-target lookup for subtree roots whose parent is outside the
+ * returned subtree. A live external parent contributes its author; tombstoned
+ * or missing parents contribute null to preserve redaction.
+ */
+function rootExternalParentAuthorById(
+  root: CommentView,
+  repo: DomainRepository,
+): Map<string, string | null> {
+  if (root.parentId === null) {
+    return new Map();
+  }
+  const parent = repo.getComment(root.parentId);
+  if (parent === undefined || isCommentTombstone(parent)) {
+    return new Map([[root.parentId, null]]);
+  }
+  return new Map([[parent.id, parent.authorActorId]]);
 }
 
 /**
@@ -371,12 +426,14 @@ function viewToDTO(
  */
 function assembleTree(
   rows: { node: CommentView; depth: number }[],
+  initialParentAuthorById: Map<string, string | null> = new Map(),
 ): CommentTreeNode | undefined {
   if (rows.length === 0) return undefined;
 
   // Build a lookup of every node's author so replyToActorId can be derived for
-  // live children. Deleted nodes contribute null (redacted author).
-  const parentAuthorById = new Map<string, string | null>();
+  // live children. The caller may seed an external parent for subtree roots.
+  // Deleted nodes contribute null (redacted author).
+  const parentAuthorById = new Map(initialParentAuthorById);
   for (const row of rows) {
     if (isCommentTombstone(row.node)) {
       parentAuthorById.set(row.node.id, null);

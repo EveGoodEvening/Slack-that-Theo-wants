@@ -401,6 +401,28 @@ describe('C3 replyToActorId targeting', () => {
     expect(r1Child.node.replyToActorId).toBe(humanA.id);
     expect(elementAt(r1Child.children, 0).node.replyToActorId).toBe(humanA2.id);
   });
+
+  it('preserves replyToActorId when fetching a subtree rooted at a nested reply', async () => {
+    const { wsA, humanA } = twoWorkspaceFixture();
+    const humanA2 = domain.createActor({
+      id: 'humanA2',
+      workspaceId: wsA.id,
+      kind: 'human',
+      displayName: 'Ava',
+    });
+    seedPost('p1', wsA.id, humanA.id, 'post', '2024-01-01T00:00:00.000Z');
+    const a = app();
+
+    const c1 = await createCommentViaApi(a, humanA.id, wsA.id, 'p1', 'c1');
+    const r1 = await createReplyViaApiSuccess(a, humanA2.id, wsA.id, c1.id, 'r1');
+    const r2 = await createReplyViaApiSuccess(a, humanA.id, wsA.id, r1.id, 'r2');
+
+    const { status, body } = await getSubtreeViaApi(a, humanA.id, wsA.id, r2.id);
+    expect(status).toBe(200);
+    const tree = body as { root: { node: { id: string; replyToActorId: string | null } } };
+    expect(tree.root.node.id).toBe(r2.id);
+    expect(tree.root.node.replyToActorId).toBe(humanA2.id);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -452,6 +474,22 @@ describe('C3 deleted-parent behavior', () => {
     expect(r2Node.node.id).toBe(r2.id);
     expect(r2Node.node.isDeleted).toBeUndefined();
     expect(r2Node.node.content).toBe('r2');
+  });
+
+  it('rejects a reply to a live descendant under a soft-deleted ancestor with 409', async () => {
+    const { wsA, humanA } = twoWorkspaceFixture();
+    seedPost('p1', wsA.id, humanA.id, 'post', '2024-01-01T00:00:00.000Z');
+    const a = app();
+
+    const c1 = await createCommentViaApi(a, humanA.id, wsA.id, 'p1', 'c1');
+    const r1 = await createReplyViaApiSuccess(a, humanA.id, wsA.id, c1.id, 'r1');
+    const r2 = await createReplyViaApiSuccess(a, humanA.id, wsA.id, r1.id, 'r2');
+
+    domain.softDeleteComment(r1.id, new Date().toISOString());
+
+    const res = await replyResponse(a, humanA.id, wsA.id, r2.id, 'blocked descendant reply');
+    expect(res.status).toBe(409);
+    expect((res.body as { code: string }).code).toBe('deleted_parent');
   });
 
   it('rejects a first-level comment on a soft-deleted post with 404', async () => {

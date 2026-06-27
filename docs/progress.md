@@ -34,7 +34,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
 | C1    | done         | Verified: npm test (30 tests), build, lint, typecheck after review fixes |
 | C1a   | done         | Verified: npm install, test (65 tests), build, lint, typecheck |
 | C2    | done         | Verified: npm install, test (132 tests), build, lint, typecheck |
-| C3    | done         | Verified: npm install, test (149 tests), build, lint, typecheck |
+| C3    | done         | Verified: npm install, test (151 tests), build, lint, typecheck |
 | C3a   | done         | Verified: npm install, test (109 tests), build, lint, typecheck |
 | C4    | not started  | Depends on C2, C3a |
 | C5    | not started  | Depends on C3, C4, C3a |
@@ -286,6 +286,6 @@ Rules (mirrored from `docs/implementation-plan.md`):
 - 2026-06-27 — Chunk C3: not started -> done — Implemented comment/reply
   API with arbitrary-depth replies, subtree/thread fetch, C1 bump-helper reuse,
   deleted-parent behavior, stable sibling ordering, and C1a authorization;
-  orchestrator verified `npm install`, `npm test` (149 tests),
-  `npm run build`, `npm run lint`, and `npm run typecheck` after type fixes.
-  C3 is `done`.
+  orchestrator verified `npm install`, `npm test` (151 tests),
+  `npm run build`, `npm run lint`, and `npm run typecheck` after type and
+  review fixes. C3 is `done`.
