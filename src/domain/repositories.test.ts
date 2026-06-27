@@ -91,8 +91,8 @@ function expectLiveComment(comment: ReturnType<DomainRepository['getComment']>) 
 
 describe('C1 migrations', () => {
   it('applies cleanly on a fresh database', () => {
-    // C1a registers migration 0002 alongside 0001; both apply on a fresh DB.
-    expect(appliedMigrations(db)).toEqual([1, 2]);
+    // Later chunks register additional migrations; a fresh DB applies the full chain.
+    expect(appliedMigrations(db)).toEqual([1, 2, 3]);
     // Core tables exist.
     const tables = db
       .prepare(
@@ -115,7 +115,9 @@ describe('C1 migrations', () => {
         "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
       )
       .all() as { name: string }[];
-    const names = tables.map((t) => t.name);
+    const names = tables
+      .map((t) => t.name)
+      .filter((name) => !name.startsWith('sqlite_'));
     // Only the migrations tracker remains (it is not owned by migration 1).
     expect(names).toEqual(['schema_migrations']);
   });
@@ -123,7 +125,7 @@ describe('C1 migrations', () => {
   it('is idempotent when re-applied after a rollback', () => {
     migrateDown(db, migrations, 1);
     migrateUp(db, migrations);
-    expect(appliedMigrations(db)).toEqual([1, 2]);
+    expect(appliedMigrations(db)).toEqual([1, 2, 3]);
     const repo = new DomainRepository(db);
     const { post } = fixture(repo);
     expect(post.id).toBe('post1');

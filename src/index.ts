@@ -1,9 +1,10 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
-import { commentRoutes } from './api/commentRoutes.js';
+import { agentRoutes } from './api/agentRoutes.js';
 import { CommentServiceImpl } from './api/commentService.js';
-import { postRoutes } from './api/postRoutes.js';
+import { commentRoutes } from './api/commentRoutes.js';
 import { PostServiceImpl } from './api/postService.js';
+import { postRoutes } from './api/postRoutes.js';
 import { feedRoutes } from './ui/feed.js';
 import { postDetailRoutes } from './ui/postDetail.js';
 import { DomainRepository } from './domain/repositories.js';
@@ -12,12 +13,14 @@ import { healthRoute } from './health.js';
 import { MembershipRepository } from './security/membership.js';
 
 /**
- * Dependencies required to mount the C2 post feed API. Omit when building the
- * minimal health-only app used by the C0 smoke test.
+ * Dependencies required to mount the C2 post feed API and later surfaces. Omit
+ * when building the minimal health-only app used by the C0 smoke test.
  */
 export interface AppDeps {
   repository: DomainRepository;
   membership: MembershipRepository;
+  /** The underlying database connection, used when mounting C7 agent routes. */
+  db?: import('./db/connection.js').BetterSqliteDatabase;
 }
 
 /**
@@ -48,6 +51,14 @@ export function createApp(deps?: AppDeps): Hono {
         commentService,
       }),
     );
+    // C7 agent control-plane API: agents create posts/comments/replies and read
+    // machine-readable feed/status metadata through the same C2/C3 services and
+    // C1a authorization boundaries, with scoped credentials, idempotency, audit
+    // logging, and rate limits layered on top. Mounted under /agents when the
+    // caller supplies the underlying database-backed security stores.
+    if (deps.db !== undefined) {
+      app.route('/agents', agentRoutes({ ...deps, db: deps.db }));
+    }
   }
   app.get('/', (c) =>
     c.json({
@@ -57,17 +68,12 @@ export function createApp(deps?: AppDeps): Hono {
       posts: deps ? '/posts' : undefined,
       comments: deps ? '/comments' : undefined,
       feed: deps ? '/feed' : undefined,
+      agents: deps?.db !== undefined ? '/agents' : undefined,
     }),
   );
   return app;
 }
 
-/**
- * Build the post-route dependencies for the dev server: open the SQLite
- * database at DATABASE_PATH (default `./app.sqlite`), run migrations, and wire the
- * domain + membership repositories. Returns undefined when the database cannot
- * be opened so the health-only app still boots.
- */
 function buildDeps(): AppDeps | undefined {
   try {
     const dbPath = process.env.DATABASE_PATH ?? './app.sqlite';
@@ -76,6 +82,7 @@ function buildDeps(): AppDeps | undefined {
     return {
       repository: new DomainRepository(db),
       membership: new MembershipRepository(db),
+      db,
     };
   } catch (err) {
     console.error('post routes not mounted:', (err as Error).message);

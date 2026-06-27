@@ -39,7 +39,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
 | C4    | done         | Verified: npm install, test (163 tests), build, lint, typecheck |
 | C5    | done         | Verified: npm install, test (171 tests), build, lint, typecheck |
 | C6    | done         | Verified: npm install, test (192 tests), build, lint, typecheck |
-| C7    | not started  | Depends on C1, C1a, C2, C3 |
+| C7    | done         | Verified: npm install, test (227 tests), build, lint, typecheck |
 | C8    | not started  | Depends on C1a, C2, C3, C4, C5 (optionally C7) |
 | C9    | not started  | Depends on C1a, C2, C3, C4, C7 |
 | C10   | not started  | Depends on all core flows |
@@ -137,17 +137,17 @@ Rules (mirrored from `docs/implementation-plan.md`):
 
 ## C7 — Agent identity and API control plane
 
-- [ ] Use the existing C1 human/agent actor type for agent identity (no separate bot-message table); add only agent-specific profile/metadata fields. The actor schema itself is owned by C1 and must not be re-defined here
-- [ ] Implement scoped API tokens or service credentials for agents, stored hashed (never plaintext), with one-time secret display at issuance
-- [ ] Implement credential rotation and revocation
-- [ ] Add audit logging for agent write actions (create post/comment/reply)
-- [ ] Add rate limits/quotas for agent API calls
-- [ ] Require idempotency keys for agent create-post/comment/reply calls to prevent duplicate replies and extra bumps on retry/replay
-- [ ] Expose endpoints for agents to create posts/comments/replies using the same C2/C3 services, routed through the C1a authorization middleware
-- [ ] Expose machine-readable feed polling or event subscription endpoint with least-privilege/redaction for agent callers
-- [ ] Define and expose a machine-readable priority/status metadata contract (per-post `lastActivityAt`, reply count, active/unresolved status, actor type) ordered by activity, so agents can infer priorities without scraping UI text
-- [ ] Redact/least-privilege scope feed, event, and status metadata APIs for agent callers (no cross-workspace leakage)
-- [ ] Add API tests proving an agent can join a post/comment tree and its replies bump posts identically to human replies; credential lifecycle (hashed storage, one-time issuance, rotation, revocation); audit logging for create post/comment/reply; rate-limit/quota enforcement; idempotency (no duplicate reply/bump on replay); metadata redaction; related migration apply/rollback for any C7 persistent security structures
+- [x] Use the existing C1 human/agent actor type for agent identity (no separate bot-message table); add only agent-specific profile/metadata fields. The actor schema itself is owned by C1 and must not be re-defined here — agent identity reuses C1 actor kind='agent'; agent-specific profile/metadata in src/security/agentProfile.ts (agent_profile table, migration 0003); actor schema untouched
+- [x] Implement scoped API tokens or service credentials for agents, stored hashed (never plaintext), with one-time secret display at issuance — src/security/credentials.ts (scrypt+salt hash, one-time plaintext return at issuance/rotation, never persisted)
+- [x] Implement credential rotation and revocation — AgentCredentialRepository.rotate/revoke/revokeAllForActor
+- [x] Add audit logging for agent write actions (create post/comment/reply) — src/security/audit.ts + AgentService writes audit record per create-post/comment/reply
+- [x] Add rate limits/quotas for agent API calls — src/security/rateLimit.ts (per-actor rolling-window counter, QuotaExceededError → 429)
+- [x] Require idempotency keys for agent create-post/comment/reply calls to prevent duplicate replies and extra bumps on retry/replay — x-idempotency-key is required on HTTP create endpoints; src/security/idempotency.ts + AgentService.writeWithIdempotency return original results on replay with no duplicate/bump
+- [x] Expose endpoints for agents to create posts/comments/replies using the same C2/C3 services, routed through the C1a authorization middleware — src/api/agentRoutes.ts mounted at /agents; reuses PostService/CommentService; agent Bearer-token principal resolution via resolveAgentPrincipal
+- [x] Expose machine-readable feed polling or event subscription endpoint with least-privilege/redaction for agent callers — GET /agents/feed delegates to C2 PostService.listFeed (workspace-scoped)
+- [x] Define and expose a machine-readable priority/status metadata contract (per-post `lastActivityAt`, reply count, active/unresolved status, actor type) ordered by activity, so agents can infer priorities without scraping UI text — GET /agents/status + GET /agents/status/:postId (AgentService.listStatus/readStatus, PostStatusEntry)
+- [x] Redact/least-privilege scope feed, event, and status metadata APIs for agent callers (no cross-workspace leakage) — all agent reads delegate to C2/C3 services which enforce workspace scope; cross-workspace posts excluded
+- [x] Add API tests proving an agent can join a post/comment tree and its replies bump posts identically to human replies; credential lifecycle (hashed storage, one-time issuance, rotation, revocation); audit logging for create post/comment/reply; rate-limit/quota enforcement; idempotency (no duplicate reply/bump on replay); metadata redaction; related migration apply/rollback for any C7 persistent security structures — src/api/agentRoutes.test.ts verified by orchestrator
 
 ## C8 — Realtime / activity updates
 
@@ -311,3 +311,33 @@ Rules (mirrored from `docs/implementation-plan.md`):
   nested replies and kept code-block content escaped/sanitized. Orchestrator
   verified `npm install`, `npm test` (192 tests), `npm run build`,
   `npm run lint`, and `npm run typecheck` after test and review fixes. C6 is `done`.
+
+- 2026-06-27 — Chunk C7: not started -> in progress — Implementation
+  complete in worktree `chunk/C7`. Added migration 0003 (agent_profile,
+  agent_credential, agent_audit_log, agent_idempotency_key, agent_quota_state)
+  with workspace-boundary composite FKs and an agent-kind trigger guard. Agent
+  identity reuses the C1 actor kind='agent' (no bot-message table, actor schema
+  untouched). Security modules under src/security/: credentials (scrypt+salt
+  hashed, one-time plaintext at issuance/rotation, verify/rotate/revoke),
+  agentProfile (agent-specific metadata), audit (append-only write log),
+  idempotency (durable key store + request digest), rateLimit (per-actor
+  rolling-window quota, QuotaExceededError → 429), agentPrincipal (Bearer
+  token → agent Principal via membership). Agent control-plane service + routes
+  under src/api/ (agentService.ts wraps C2 PostService + C3 CommentService with
+  idempotency/audit/quota and exposes machine-readable status metadata;
+  agentRoutes.ts mounted at /agents). Updated src/index.ts AppDeps to carry the
+  db connection for C7 repositories. Tests in src/api/agentRoutes.test.ts cover
+  agent reply bump parity, credential lifecycle (hashed storage, one-time
+  issuance, rotation, revocation, cross-workspace rejection), audit logging for
+  create post/comment/reply, rate-limit/quota enforcement (429, no duplicate
+  write/bump), idempotency (no duplicate reply/bump on replay), metadata
+  redaction (no cross-workspace leakage), and migration 0003 apply/rollback.
+  Pending orchestrator verification before marking `[x]`.
+- 2026-06-27 — Chunk C7: completion pass in
+  `/root/gitfiles/Slack-that-Theo-wants-C7` — Registered migration 0003,
+  exported C7 security/API modules, restored app DB bootstrap for /agents,
+  enforced required idempotency keys on agent HTTP writes, tightened
+  credential/profile agent-kind triggers and idempotency-key scoping, and added
+  the missing idempotency-required API test. Orchestrator verified `npm install`,
+  `npm test` (227 tests), `npm run build`, `npm run lint`, and
+  `npm run typecheck` after gate fixes. C7 is `done`.
