@@ -33,7 +33,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
 | C0    | done         | Verified: npm install, test, dev health route, build, lint, typecheck |
 | C1    | done         | Verified: npm test (30 tests), build, lint, typecheck after review fixes |
 | C1a   | done         | Verified: npm install, test (65 tests), build, lint, typecheck |
-| C2    | not started  | Depends on C1, C1a |
+| C2    | done         | Verified: npm install, test (132 tests), build, lint, typecheck |
 | C3    | not started  | Depends on C1, C1a |
 | C3a   | done         | Verified: npm install, test (109 tests), build, lint, typecheck |
 | C4    | not started  | Depends on C2, C3a |
@@ -76,14 +76,14 @@ Rules (mirrored from `docs/implementation-plan.md`):
 
 ## C2 — Post feed API
 
-- [ ] Define service interface for post creation and feed listing
-- [ ] Implement create-post endpoint (author, workspace/group, content, initial `lastActivityAt`)
-- [ ] Implement list-feed endpoint ordered by `lastActivityAt` descending
-- [ ] Implement read-post endpoint returning post + comment-tree metadata
-- [ ] Enforce workspace/group boundary on every endpoint via the C1a authorization middleware (even before real sign-in)
-- [ ] Enforce feed listing scope by applying the C1a workspace/group filter helper before ordering/pagination
-- [ ] Add cursor-based pagination for the feed with a deterministic order: `lastActivityAt DESC, postId DESC` (or the stack's stable unique-key equivalent); the cursor encodes this composite order so equal timestamps never produce duplicate or skipped posts
-- [ ] Add API tests: newest post ordering, old post bumps after C1-seeded comment activity (data-layer bump via the shared C1 bump helper), empty state, pagination cursor behavior including multiple posts sharing the same `lastActivityAt`, cross-workspace rejection, feed listings exclude posts outside the principal's workspace/group
+- [x] Define service interface for post creation and feed listing — src/api/postService.ts
+- [x] Implement create-post endpoint (author, workspace/group, content, initial `lastActivityAt`) — POST /posts in src/api/postRoutes.ts
+- [x] Implement list-feed endpoint ordered by `lastActivityAt` descending — GET /posts uses `lastActivityAt DESC, postId DESC`
+- [x] Implement read-post endpoint returning post + comment-tree metadata — GET /posts/:id returns post plus live total/first-level counts only
+- [x] Enforce workspace/group boundary on every endpoint via the C1a authorization middleware (even before real sign-in) — shared auth middleware + per-resource service checks
+- [x] Enforce feed listing scope by applying the C1a workspace/group filter helper before ordering/pagination — workspace predicate is resolved before repository query; SQL scopes by workspace before cursor/order/limit
+- [x] Add cursor-based pagination for the feed with a deterministic order: `lastActivityAt DESC, postId DESC` (or the stack's stable unique-key equivalent); the cursor encodes this composite order so equal timestamps never produce duplicate or skipped posts
+- [x] Add API tests: newest post ordering, old post bumps after C1-seeded comment activity (data-layer bump via the shared C1 bump helper), empty state, pagination cursor behavior including multiple posts sharing the same `lastActivityAt`, cross-workspace rejection, feed listings exclude posts outside the principal's workspace/group — src/api/postRoutes.test.ts verified by orchestrator
 
 ## C3 — Comment/reply API with unlimited nesting
 
@@ -274,3 +274,12 @@ Rules (mirrored from `docs/implementation-plan.md`):
   backslash hard breaks, and a cross-surface invariant that no render path emits
   unescaped stored content.
   Review fixes applied for blockquote depth, backslash hard breaks, and C1-domain decoupling; orchestrator verified `npm install`, `npm test` (109 tests), `npm run build`, `npm run lint`, and `npm run typecheck`. C3a is `done`.
+- 2026-06-27 — Chunk C2: not started -> done — Implemented create/list/read
+  post API with C1a authorization and composite feed cursor; orchestrator
+  verified `npm install`, `npm test` (132 tests), `npm run build`,
+  `npm run lint`, and `npm run typecheck` after gate fixes. C2 is `done`.
+- 2026-06-27 — Chunk C2: review fixes verified — Deferred local database
+  bootstrap to the direct dev-server path, switched default DB to ignored
+  `app.sqlite`, removed generated `app.db*` artifacts, and reverified
+  `npm test` (132 tests), `npm run build`, `npm run lint`, and
+  `npm run typecheck`. C2 remains `done`.

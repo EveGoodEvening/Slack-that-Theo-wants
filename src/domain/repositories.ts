@@ -183,6 +183,81 @@ export class DomainRepository {
       .run(at, id).changes;
   }
 
+  /**
+   * List live posts in one workspace using the C2 feed order. The workspace and
+   * live-post predicates are applied before the composite cursor and ORDER BY,
+   * so out-of-scope rows never participate in pagination.
+   */
+  listPostsInWorkspace(
+    workspaceId: string,
+    limit: number,
+    cursor?: { lastActivityAt: string; postId: string },
+  ): Post[] {
+    if (cursor === undefined) {
+      return this.db
+        .prepare(
+          `SELECT id, workspace_id AS workspaceId, author_actor_id AS authorActorId,
+                  content, created_at AS createdAt,
+                  last_activity_at AS lastActivityAt, deleted_at AS deletedAt
+           FROM post
+           WHERE workspace_id = @workspaceId
+             AND deleted_at IS NULL
+           ORDER BY last_activity_at DESC, id DESC
+           LIMIT @limit`,
+        )
+        .all({ workspaceId, limit }) as Post[];
+    }
+
+    return this.db
+      .prepare(
+        `SELECT id, workspace_id AS workspaceId, author_actor_id AS authorActorId,
+                content, created_at AS createdAt,
+                last_activity_at AS lastActivityAt, deleted_at AS deletedAt
+         FROM post
+         WHERE workspace_id = @workspaceId
+           AND deleted_at IS NULL
+           AND (
+             last_activity_at < @cursorLastActivityAt
+             OR (last_activity_at = @cursorLastActivityAt AND id < @cursorPostId)
+           )
+         ORDER BY last_activity_at DESC, id DESC
+         LIMIT @limit`,
+      )
+      .all({
+        workspaceId,
+        limit,
+        cursorLastActivityAt: cursor.lastActivityAt,
+        cursorPostId: cursor.postId,
+      }) as Post[];
+  }
+
+  /** Count live comment/reply nodes under one post for C2 read-post metadata. */
+  countCommentsForPost(rootPostId: string): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM comment_node
+         WHERE root_post_id = ? AND deleted_at IS NULL`,
+      )
+      .get(rootPostId) as { count: number };
+    return row.count;
+  }
+
+  /** Count live first-level comments under one post for C2 read-post metadata. */
+  countFirstLevelCommentsForPost(rootPostId: string): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM comment_node
+         WHERE root_post_id = ?
+           AND parent_id IS NULL
+           AND deleted_at IS NULL`,
+      )
+      .get(rootPostId) as { count: number };
+    return row.count;
+  }
+
+
   // --- comment / reply -----------------------------------------------------
 
   /**
