@@ -5,6 +5,11 @@ import {
   type PostView,
 } from '../domain/types.js';
 import {
+  noopActivityEventPublisher,
+  postCreatedActivityEvent,
+  type ActivityEventPublisher,
+} from './activityEvents.js';
+import {
   assertCanRead,
   assertCanWrite,
   workspaceScopePredicate,
@@ -136,7 +141,10 @@ export interface PostService {
  * boundary check is never bypassed.
  */
 export class PostServiceImpl implements PostService {
-  constructor(private readonly repo: DomainRepository) {}
+  constructor(
+    private readonly repo: DomainRepository,
+    private readonly activity: ActivityEventPublisher = noopActivityEventPublisher,
+  ) {}
 
   createPost(input: {
     principal: Principal;
@@ -158,7 +166,19 @@ export class PostServiceImpl implements PostService {
       content: input.content,
       lastActivityAt: input.lastActivityAt ?? now,
     });
-    return toDTO(post);
+    const dto = toDTO(post);
+    this.activity.publish(
+      postCreatedActivityEvent({
+        post: {
+          id: dto.id,
+          workspaceId: dto.workspaceId,
+          authorActorId: dto.authorActorId,
+          createdAt: dto.createdAt,
+          lastActivityAt: dto.lastActivityAt,
+        },
+      }),
+    );
+    return dto;
   }
 
   listFeed(input: {

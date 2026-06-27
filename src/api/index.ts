@@ -40,3 +40,25 @@ export {
   type PostStatusEntry,
 } from './agentService.js';
 export { agentRoutes, type AgentRouteDeps } from './agentRoutes.js';
+
+export {
+  ACTIVITY_EVENT_TYPES,
+  ACTIVITY_EVENT_VERSION,
+  ActivityEventHub,
+  commentCreatedActivityEvent,
+  isKnownActivityEventType,
+  noopActivityEventPublisher,
+  postCreatedActivityEvent,
+  replyCreatedActivityEvent,
+  serializeActivitySse,
+  type ActivityCommentPayload,
+  type ActivityEvent,
+  type ActivityEventPublisher,
+  type ActivityEventSource,
+  type ActivityEventType,
+  type ActivityPostPayload,
+  type CommentCreatedActivityEvent,
+  type PostCreatedActivityEvent,
+  type ReplyCreatedActivityEvent,
+} from './activityEvents.js';
+export { activityRoutes, type ActivityRouteDeps } from './activityRoutes.js';

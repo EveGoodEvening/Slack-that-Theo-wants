@@ -1,5 +1,6 @@
 import { CODE_BLOCK_CSS, COPY_CODE_SCRIPT, PREVIEW_SCRIPT } from './codeBlockUi.js';
 import { Hono } from 'hono';
+import { ACTIVITY_EVENT_TYPES } from '../api/activityEvents.js';
 import {
   CommentNotFoundError,
   DeletedParentError,
@@ -200,6 +201,65 @@ ${comments.map((comment) => renderCommentNode(comment, postId, principal, 0)).jo
     </ol>`;
 }
 
+function principalQuery(principal: Principal): string {
+  return `${ACTOR_FIELD}=${encodeURIComponent(principal.actorId)}&${WORKSPACE_FIELD}=${encodeURIComponent(principal.workspaceId)}`;
+}
+
+function renderConversationSection(input: {
+  post: PostDTO;
+  totalCount: number;
+  firstLevelCount: number;
+  comments: CommentTreeNode[];
+  principal: Principal;
+}): string {
+  const { post, totalCount, firstLevelCount, comments, principal } = input;
+  return `  <section class="conversation" aria-live="polite">
+    <h2>Comments</h2>
+    <p class="counts">${totalCount} total ${totalCount === 1 ? 'comment/reply' : 'comments/replies'}; ${firstLevelCount} first-level ${firstLevelCount === 1 ? 'comment' : 'comments'}.</p>
+${renderCommentComposer(post.id, principal)}
+${renderConversation(comments, post.id, principal)}
+    <p class="conversation-realtime-status" data-realtime-status="idle">Live comment updates stream when this browser supports EventSource.</p>
+  </section>`;
+}
+
+function renderPostDetailRealtimeScript(postId: string, principal: Principal): string {
+  const eventUrl = `/events?${principalQuery(principal)}`;
+  const fragmentUrl = `/feed/${encodeURIComponent(postId)}/fragments/conversation?${principalQuery(principal)}`;
+  const eventTypes = JSON.stringify([
+    ACTIVITY_EVENT_TYPES.commentCreated,
+    ACTIVITY_EVENT_TYPES.replyCreated,
+  ]);
+  return `    // C8 progressive enhancement: refresh this conversation on scoped activity.
+    (function () {
+      if (typeof EventSource === 'undefined') return;
+      var source = new EventSource(${JSON.stringify(eventUrl)});
+      var postId = ${JSON.stringify(postId)};
+      var eventTypes = ${eventTypes};
+      function refreshConversation(message) {
+        var payload;
+        try { payload = JSON.parse(message.data); } catch (_) { return; }
+        if (!payload || payload.rootPostId !== postId) return;
+        fetch(${JSON.stringify(fragmentUrl)}, { headers: { Accept: 'text/html' } })
+          .then(function (response) {
+            if (!response.ok) throw new Error('conversation fragment fetch failed');
+            return response.text();
+          })
+          .then(function (html) {
+            var template = document.createElement('template');
+            template.innerHTML = html.trim();
+            var next = template.content.firstElementChild;
+            var current = document.querySelector('.conversation');
+            if (next && current) current.replaceWith(next);
+          })
+          .catch(function () {
+            var status = document.querySelector('[data-realtime-status]');
+            if (status) status.textContent = 'Live updates paused; refresh to catch up.';
+          });
+      }
+      eventTypes.forEach(function (type) { source.addEventListener(type, refreshConversation); });
+    })();`;
+}
+
 function renderPostDetailDocument(input: {
   post: PostDTO;
   totalCount: number;
@@ -242,6 +302,7 @@ function renderPostDetailDocument(input: {
     .reply-depth-safeguard, .conversation-empty { color: #666; font-style: italic; }
     .conversation-error { color: #b00; }
     .conversation-notice { color: #060; }
+    .conversation-realtime-status { color: #666; font-size: 0.85rem; }
 ${CODE_BLOCK_CSS}
   </style>
 </head>
@@ -254,13 +315,15 @@ ${CODE_BLOCK_CSS}
 ${errorBlock}
 ${noticeBlock}
 ${renderPostArticle(post)}
-  <section class="conversation" aria-live="polite">
-    <h2>Comments</h2>
-    <p class="counts">${totalCount} total ${totalCount === 1 ? 'comment/reply' : 'comments/replies'}; ${firstLevelCount} first-level ${firstLevelCount === 1 ? 'comment' : 'comments'}.</p>
-${renderCommentComposer(post.id, principal)}
-${renderConversation(comments, post.id, principal)}
-  </section>
+${renderConversationSection({
+    post,
+    totalCount,
+    firstLevelCount,
+    comments,
+    principal,
+  })}
   <script>
+${renderPostDetailRealtimeScript(post.id, principal)}
 ${COPY_CODE_SCRIPT}
 ${PREVIEW_SCRIPT}
   </script>
@@ -321,6 +384,29 @@ function renderCurrentState(input: {
   });
 }
 
+function renderConversationFragment(input: {
+  principal: Principal;
+  postId: string;
+  postService: PostService;
+  commentService: CommentService;
+}): string {
+  const read = input.postService.readPost({
+    principal: input.principal,
+    postId: input.postId,
+  });
+  const thread = input.commentService.getFullThread({
+    principal: input.principal,
+    postId: input.postId,
+  });
+  return renderConversationSection({
+    post: read.post,
+    totalCount: read.comments.totalCount,
+    firstLevelCount: read.comments.firstLevelCount,
+    comments: thread.comments,
+    principal: input.principal,
+  });
+}
+
 function mapConversationError(err: unknown): {
   status: 401 | 403 | 404 | 409 | 500;
   code: string;
@@ -345,6 +431,24 @@ function mapConversationError(err: unknown): {
 export function postDetailRoutes(deps: PostDetailRouteDeps): Hono {
   const route = new Hono();
   const { membership, postService, commentService } = deps;
+
+  route.get('/:postId/fragments/conversation', (c) => {
+    let principal: Principal;
+    try {
+      principal = resolveUiPrincipal(c.req, {}, membership);
+      return c.html(
+        renderConversationFragment({
+          principal,
+          postId: c.req.param('postId'),
+          postService,
+          commentService,
+        }),
+      );
+    } catch (err) {
+      const mapped = mapConversationError(err);
+      return c.text(mapped.message, mapped.status);
+    }
+  });
 
   route.get('/:postId', (c) => {
     let principal: Principal;

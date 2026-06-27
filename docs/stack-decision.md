@@ -407,3 +407,55 @@ These are recorded here so later chunks do not re-litigate them.
 - **HTTP surface:** agent endpoints are mounted under `/agents` and use the
   agent Bearer-token middleware (not the C1a header middleware). C2/C3 human
   endpoints remain unchanged under `/posts` and `/comments`.
+
+
+## C8 decisions (realtime / activity updates)
+
+- **Transport:** use server-sent events (SSE) at `GET /events`. SSE matches the
+  current Hono + server-rendered UI stack with one-way activity notifications,
+  avoids WebSocket connection state/protocol complexity, and degrades cleanly:
+  browsers without `EventSource` keep the existing full-refresh form flows.
+  Polling was rejected because it would duplicate feed/status reads and add
+  avoidable latency/load for the simple append/bump notification contract.
+- **Fan-out model:** `ActivityEventHub` is an in-process, non-durable hint bus.
+  Durable truth remains in C1/C2/C3 (`post.lastActivityAt`, post cards, comment
+  trees). Subscribers use events only to know which server-rendered fragment or
+  scoped API data to refetch; reconnect/rollback compatibility is therefore
+  safe because a missed event is corrected by a normal page/API refresh.
+- **Versioned event contract:** all event names carry an explicit `.v1` suffix
+  and all payloads include `version: 1`, `id`, `workspaceId`, `rootPostId`,
+  `rootPostLastActivityAt`, and `producedAt`. Event payloads intentionally omit
+  user-authored content; clients fetch authorized fragments after receiving the
+  routing metadata.
+
+  | Event name | Producer | Payload target | Consumers |
+  | --- | --- | --- | --- |
+  | `slack.activity.post.created.v1` | `PostServiceImpl.createPost` | `post { id, workspaceId, authorActorId, createdAt, lastActivityAt }` | Feed handler fetches `/feed/fragments/posts/:postId` and prepends/replaces the card |
+  | `slack.activity.comment.created.v1` | `CommentServiceImpl.createComment` | `comment { id, rootPostId, parentId: null, authorActorId, createdAt, replyToActorId: null }` | Feed handler refreshes the bumped root post card; post-detail handler refreshes matching conversation fragment |
+  | `slack.activity.reply.created.v1` | `CommentServiceImpl.createReply` | `comment { id, rootPostId, parentId, authorActorId, createdAt, replyToActorId }` | Feed handler refreshes the bumped root post card; post-detail handler refreshes matching conversation fragment |
+
+- **Actor-agnostic producers:** human C2/C3 HTTP routes, C4/C5 form routes, and
+  C7 agent routes all publish by calling the same `PostServiceImpl` /
+  `CommentServiceImpl` methods. C7 adds idempotency/quota/audit around those
+  services, but a non-replayed agent create/reply emits the same event as a
+  human write; idempotency replays do not call the write service and therefore
+  do not emit duplicate events.
+- **Authorization/filtering:** the SSE route resolves the C1a principal from
+  the standard stubbed headers; browser `EventSource` may pass the same actor /
+  workspace values as query params because it cannot set custom headers. The
+  route enforces the C1a read role before subscribing, and `ActivityEventHub`
+  applies the shared workspace-scope filter before delivering each event. A
+  workspace B write is never enqueued to a workspace A subscriber.
+- **UI consumers:** feed pages listen for all known C8 event types, fetch the
+  scoped card fragment for the root post, remove any existing card, and
+  `prepend` the fresh server-rendered card so background comments/replies move
+  old posts to the top without manual refresh. Post-detail pages listen for
+  comment/reply events whose `rootPostId` matches the current post and replace
+  the conversation section with `/feed/:postId/fragments/conversation`.
+- **Unknown events and compatibility:** clients register named listeners only
+  for the known `.v1` event names; unknown event names are ignored by default.
+  Future incompatible payloads must use new event names (for example `.v2`) and
+  keep `.v1` producers until deployed clients have rolled. Because events carry
+  no durable state, rollback is disabling the SSE route/script or reverting the
+  service publisher wiring; the existing C2/C3/C4/C5 read paths remain the
+  source of truth.

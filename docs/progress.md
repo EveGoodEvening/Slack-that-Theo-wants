@@ -40,7 +40,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
 | C5    | done         | Verified: npm install, test (171 tests), build, lint, typecheck |
 | C6    | done         | Verified: npm install, test (192 tests), build, lint, typecheck |
 | C7    | done         | Verified: npm install, test (240 tests), build, lint, typecheck |
-| C8    | not started  | Depends on C1a, C2, C3, C4, C5 (optionally C7) |
+| C8    | done         | Verified: npm install, targeted C8 tests (29 tests), full test (244 tests), build, lint, typecheck |
 | C9    | not started  | Depends on C1a, C2, C3, C4, C7 |
 | C10   | not started  | Depends on all core flows |
 
@@ -151,13 +151,13 @@ Rules (mirrored from `docs/implementation-plan.md`):
 
 ## C8 — Realtime / activity updates
 
-- [ ] Choose and record transport (websocket, SSE, or polling)
-- [ ] Emit actor-agnostic events from the shared post/comment/reply services on post creation, comment/reply creation, and agent replies (so C7 agent endpoints dispatch through the same event path; C7 remains optional)
-- [ ] Define a versioned event contract: versioned event names/payloads, producer and consumer dispatch responsibilities (feed vs post-detail handlers), authorization/filtering rules per workspace/group, unknown-event behavior, and compatibility/rollback expectations
-- [ ] Filter realtime events by workspace/group membership via the C1a authorization middleware (no cross-workspace leakage)
-- [ ] Implement live feed reordering so bumped posts move to the top without refresh
-- [ ] Implement live post-detail update for new comments/replies
-- [ ] Add integration/E2E tests proving a background comment on an old post moves it to the top without manual refresh; each emitted event type reaches the intended feed and post-detail handlers; events do not leak across workspace/group boundaries
+- [x] Choose and record transport (websocket, SSE, or polling) — implemented as simple in-process SSE (`GET /events`) and recorded in stack decision; verified by orchestrator
+- [x] Emit actor-agnostic events from the shared post/comment/reply services on post creation, comment/reply creation, and agent replies (so C7 agent endpoints dispatch through the same event path; C7 remains optional) — implemented in `PostServiceImpl` / `CommentServiceImpl`, with C7 routes sharing those service instances; verified by orchestrator
+- [x] Define a versioned event contract: versioned event names/payloads, producer and consumer dispatch responsibilities (feed vs post-detail handlers), authorization/filtering rules per workspace/group, unknown-event behavior, and compatibility/rollback expectations — `slack.activity.{post,comment,reply}.created.v1` contract implemented and documented; verified by orchestrator
+- [x] Filter realtime events by workspace/group membership via the C1a authorization middleware (no cross-workspace leakage) — `/events` resolves C1a principals and `ActivityEventHub` scopes fan-out by workspace; verified by orchestrator
+- [x] Implement live feed reordering so bumped posts move to the top without refresh — feed EventSource handler fetches server-rendered card fragments and prepends changed posts; verified by orchestrator
+- [x] Implement live post-detail update for new comments/replies — post-detail EventSource handler fetches and swaps the conversation fragment for matching root posts; verified by orchestrator
+- [x] Add integration/E2E tests proving a background comment on an old post moves it to the top without manual refresh; each emitted event type reaches the intended feed and post-detail handlers; events do not leak across workspace/group boundaries — added `src/api/activityRoutes.test.ts` plus feed/detail UI fragment tests; verified by orchestrator
 
 ## C9 — Auth, workspace boundaries, collaboration base
 
@@ -359,3 +359,15 @@ Rules (mirrored from `docs/implementation-plan.md`):
   cross-workspace agent resource misses return identical generic 404 bodies.
   Orchestrator reverified `npm test` (240 tests), `npm run build`,
   `npm run lint`, and `npm run typecheck`. C7 remains `done`.
+- 2026-06-27 — Chunk C8: implementation pass in
+  `/root/gitfiles/Slack-that-Theo-wants-C8` — Chose SSE (`GET /events`) over
+  WebSockets/polling for the current Hono stack; added an in-process
+  `ActivityEventHub` with versioned actor-agnostic `slack.activity.*.v1`
+  events; wired publication from shared C2/C3 services so human routes and C7
+  agent writes share the same event path; mounted scoped SSE subscriptions;
+  added feed card and post-detail conversation fragment endpoints; added
+  progressive EventSource enhancement for feed reordering and conversation
+  refresh; and added targeted C8 integration/UI tests. Orchestrator verified
+  `npm install`, targeted C8 tests (`npm test -- src/api/activityRoutes.test.ts
+  src/ui/feed.test.ts src/ui/postDetail.test.ts`, 29 tests), full `npm test`
+  (244 tests), `npm run build`, `npm run lint`, and `npm run typecheck`. C8 is `done`.

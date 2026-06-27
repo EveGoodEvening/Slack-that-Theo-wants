@@ -6,6 +6,12 @@ import {
   type CommentView,
 } from '../domain/types.js';
 import {
+  commentCreatedActivityEvent,
+  noopActivityEventPublisher,
+  replyCreatedActivityEvent,
+  type ActivityEventPublisher,
+} from './activityEvents.js';
+import {
   assertCanRead,
   assertCanWrite,
   type Principal,
@@ -176,7 +182,10 @@ export class DeletedParentError extends Error {
  * the boundary check is never bypassed.
  */
 export class CommentServiceImpl implements CommentService {
-  constructor(private readonly repo: DomainRepository) {}
+  constructor(
+    private readonly repo: DomainRepository,
+    private readonly activity: ActivityEventPublisher = noopActivityEventPublisher,
+  ) {}
 
   createComment(input: {
     principal: Principal;
@@ -209,7 +218,26 @@ export class CommentServiceImpl implements CommentService {
       content: input.content,
       createdAt: input.createdAt ?? now,
     });
-    return toDTO(node, null);
+    const dto = toDTO(node, null);
+    this.activity.publish(
+      commentCreatedActivityEvent({
+        workspaceId: node.workspaceId,
+        rootPostLastActivityAt: rootPostLastActivityAt(
+          this.repo,
+          node.rootPostId,
+          node.createdAt,
+        ),
+        comment: {
+          id: node.id,
+          rootPostId: node.rootPostId,
+          parentId: null,
+          authorActorId: node.authorActorId,
+          createdAt: node.createdAt,
+          replyToActorId: null,
+        },
+      }),
+    );
+    return dto;
   }
 
   createReply(input: {
@@ -255,7 +283,26 @@ export class CommentServiceImpl implements CommentService {
       content: input.content,
       createdAt: input.createdAt ?? now,
     });
-    return toDTO(node, replyToActorId);
+    const dto = toDTO(node, replyToActorId);
+    this.activity.publish(
+      replyCreatedActivityEvent({
+        workspaceId: node.workspaceId,
+        rootPostLastActivityAt: rootPostLastActivityAt(
+          this.repo,
+          node.rootPostId,
+          node.createdAt,
+        ),
+        comment: {
+          id: node.id,
+          rootPostId: node.rootPostId,
+          parentId: parent.id,
+          authorActorId: node.authorActorId,
+          createdAt: node.createdAt,
+          replyToActorId,
+        },
+      }),
+    );
+    return dto;
   }
 
   getComment(input: { principal: Principal; commentId: string }): CommentViewDTO {
@@ -313,6 +360,18 @@ export class CommentServiceImpl implements CommentService {
     // repository (createdAt ASC, id ASC); preserve that order.
     return { postId: input.postId, comments };
   }
+}
+
+function rootPostLastActivityAt(
+  repo: DomainRepository,
+  rootPostId: string,
+  fallback: string,
+): string {
+  const post = repo.getPost(rootPostId);
+  if (post !== undefined && !isPostTombstone(post)) {
+    return post.lastActivityAt;
+  }
+  return fallback;
 }
 
 // ---------------------------------------------------------------------------

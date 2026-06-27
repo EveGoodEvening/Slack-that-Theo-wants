@@ -22,6 +22,7 @@ import {
   CommentServiceImpl,
   DeletedParentError,
   PostNotFoundError,
+  type CommentService,
 } from './commentService.js';
 import {
   AgentService,
@@ -30,7 +31,8 @@ import {
   type AgentWriteResult,
   type PostStatusEntry,
 } from './agentService.js';
-import { decodeCursor, PostServiceImpl, type FeedCursor } from './postService.js';
+import type { ActivityEventPublisher } from './activityEvents.js';
+import { decodeCursor, PostServiceImpl, type FeedCursor, type PostService } from './postService.js';
 
 /**
  * C7 agent control-plane HTTP surface.
@@ -67,6 +69,12 @@ export interface AgentRouteDeps {
   db: BetterSqliteDatabase;
   /** Optional service override; defaults to AgentService over C2/C3 services. */
   service?: AgentService;
+  /** Optional shared C8 publisher; supplied by createApp so agent writes emit on the same hub. */
+  activity?: ActivityEventPublisher;
+  /** Optional shared post service; lets C7 publish through the same C8 path. */
+  postService?: PostService;
+  /** Optional shared comment service; lets C7 publish through the same C8 path. */
+  commentService?: CommentService;
 }
 
 /** Context variables for the agent surface: the resolved agent principal. */
@@ -79,14 +87,17 @@ export function agentRoutes(deps: AgentRouteDeps): Hono<{
 }> {
   const route = new Hono<{ Variables: AgentAuthVariables }>();
   const credentials = new AgentCredentialRepository(deps.db);
+  const postService = deps.postService ?? new PostServiceImpl(deps.repository, deps.activity);
+  const commentService =
+    deps.commentService ?? new CommentServiceImpl(deps.repository, deps.activity);
   // The AgentService is constructed with all C7 repositories. When a service
   // override is supplied (tests), use it directly.
   const service =
     deps.service ??
     new AgentService({
       repository: deps.repository,
-      postService: new PostServiceImpl(deps.repository),
-      commentService: new CommentServiceImpl(deps.repository),
+      postService,
+      commentService,
       credentials,
       profiles: new AgentProfileRepository(deps.db),
       audit: new AgentAuditRepository(deps.db),

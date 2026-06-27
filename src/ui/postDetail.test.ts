@@ -12,6 +12,7 @@ import { DomainRepository } from '../domain/index.js';
 import { MembershipRepository } from '../security/membership.js';
 import { PRINCIPAL_HEADERS } from '../security/principal.js';
 import { createApp, type AppDeps } from '../index.js';
+import { ACTIVITY_EVENT_TYPES } from '../api/activityEvents.js';
 
 /**
  * C5 conversation UI tests.
@@ -593,5 +594,44 @@ describe('C6 code blocks in the conversation UI', () => {
       body: form.toString(),
     });
     expect(res.status).toBe(401);
+  });
+});
+
+describe('C8 post detail realtime progressive enhancement', () => {
+  it('wires scoped comment/reply SSE handlers and exposes a conversation fragment', async () => {
+    const { workspace, ada } = workspaceFixture();
+    seedPost(
+      'post1',
+      workspace.id,
+      ada.id,
+      'Realtime post',
+      '2024-01-01T00:00:00.000Z',
+    );
+    const a = app();
+
+    const detail = await getPostDetail(a, 'post1', ada.id, workspace.id);
+    expect(detail.status).toBe(200);
+    expect(detail.html).toContain('/events?actorId=ada&workspaceId=wsA');
+    expect(detail.html).toContain(ACTIVITY_EVENT_TYPES.commentCreated);
+    expect(detail.html).toContain(ACTIVITY_EVENT_TYPES.replyCreated);
+    expect(detail.html).toContain('current.replaceWith(next);');
+
+    const posted = await postCommentForm(
+      a,
+      'post1',
+      ada.id,
+      workspace.id,
+      'background detail update',
+    );
+    expect(posted.status).toBe(201);
+
+    const fragmentRes = await a.request(
+      `/feed/post1/fragments/conversation?actorId=${ada.id}&workspaceId=${workspace.id}`,
+    );
+    expect(fragmentRes.status).toBe(200);
+    const fragment = await fragmentRes.text();
+    expect(fragment).toContain('class="conversation"');
+    expect(fragment).toContain('background detail update');
+    expect(fragment).toContain('data-realtime-status="idle"');
   });
 });

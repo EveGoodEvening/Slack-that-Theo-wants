@@ -13,6 +13,7 @@ import { bumpPostLastActivity } from '../domain/repositories.js';
 import { MembershipRepository } from '../security/membership.js';
 import { PRINCIPAL_HEADERS } from '../security/principal.js';
 import { createApp, type AppDeps } from '../index.js';
+import { ACTIVITY_EVENT_TYPES } from '../api/activityEvents.js';
 
 /**
  * C4 minimal human UI tests.
@@ -320,5 +321,47 @@ describe('C4 unsafe HTML/script is escaped/sanitized', () => {
     // The literal <b> tags from stored content are escaped too (the renderer
     // only emits its own fixed tag set, never user-supplied tags).
     expect(html).toContain('&lt;b&gt;bold&lt;/b&gt;');
+  });
+});
+
+describe('C8 feed realtime progressive enhancement', () => {
+  it('wires scoped SSE handlers and exposes post-card fragments for live reordering', async () => {
+    const { humanA, wsA } = twoWorkspaceFixture();
+    seedPost('old', wsA.id, humanA.id, 'old post', '2024-01-01T00:00:00.000Z');
+    seedPost('new', wsA.id, humanA.id, 'new post', '2024-01-02T00:00:00.000Z');
+    const a = app();
+
+    const before = await getFeed(a, humanA.id, wsA.id);
+    expect(before.status).toBe(200);
+    expect(before.html.indexOf('data-post-id="new"')).toBeLessThan(
+      before.html.indexOf('data-post-id="old"'),
+    );
+    expect(before.html).toContain('/events?actorId=humanA&workspaceId=wsA');
+    expect(before.html).toContain(ACTIVITY_EVENT_TYPES.postCreated);
+    expect(before.html).toContain(ACTIVITY_EVENT_TYPES.commentCreated);
+    expect(before.html).toContain(ACTIVITY_EVENT_TYPES.replyCreated);
+    expect(before.html).toContain('feed.prepend(card);');
+
+    const commentRes = await a.request('/posts/old/comments', {
+      method: 'POST',
+      headers: {
+        ...headersFor(humanA.id, wsA.id),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ content: 'background bump' }),
+    });
+    expect(commentRes.status).toBe(201);
+    const updated = domain.getPost('old');
+    if (updated === undefined || 'isDeleted' in updated) {
+      throw new Error('expected bumped live post');
+    }
+
+    const fragmentRes = await a.request(
+      `/feed/fragments/posts/old?actorId=${humanA.id}&workspaceId=${wsA.id}`,
+    );
+    expect(fragmentRes.status).toBe(200);
+    const fragment = await fragmentRes.text();
+    expect(fragment).toContain('data-post-id="old"');
+    expect(fragment).toContain(`datetime="${updated.lastActivityAt}"`);
   });
 });
