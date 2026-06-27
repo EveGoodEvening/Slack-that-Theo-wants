@@ -39,7 +39,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
 | C4    | done         | Verified: npm install, test (163 tests), build, lint, typecheck |
 | C5    | done         | Verified: npm install, test (171 tests), build, lint, typecheck |
 | C6    | done         | Verified: npm install, test (192 tests), build, lint, typecheck |
-| C7    | done         | Verified: npm install, test (235 tests), build, lint, typecheck |
+| C7    | done         | Verified: npm install, test (240 tests), build, lint, typecheck |
 | C8    | not started  | Depends on C1a, C2, C3, C4, C5 (optionally C7) |
 | C9    | not started  | Depends on C1a, C2, C3, C4, C7 |
 | C10   | not started  | Depends on all core flows |
@@ -339,7 +339,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
   enforced required idempotency keys on agent HTTP writes, tightened
   credential/profile agent-kind triggers and idempotency-key scoping, and added
   the missing idempotency-required API test. Orchestrator verified `npm install`,
-  `npm test` (235 tests), `npm run build`, `npm run lint`, and
+  `npm test` (240 tests), `npm run build`, `npm run lint`, and
   `npm run typecheck` after gate and review fixes. C7 is `done`.
 - 2026-06-27 — Chunk C7: review-fix pass in
   `/root/gitfiles/Slack-that-Theo-wants-C7` — Applied blocking review fixes:
@@ -355,5 +355,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
   generic redacted 404 `not_found` with no target workspace identifier. Added
   tests for idempotency-key reuse, rolling-window boundary behavior, and
   deleted-parent agent replies; tightened the cross-workspace readStatus/readPost
-  redaction assertions. Orchestrator reverified `npm test` (235 tests),
-  `npm run build`, `npm run lint`, and `npm run typecheck`. C7 remains `done`.
+  redaction assertions. Final redaction-parity fix made true not-found and
+  cross-workspace agent resource misses return identical generic 404 bodies.
+  Orchestrator reverified `npm test` (240 tests), `npm run build`,
+  `npm run lint`, and `npm run typecheck`. C7 remains `done`.

@@ -417,10 +417,16 @@ function mapAgentError(c: Context, err: unknown): Response {
     return c.json({ error: err.message, code: 'deleted_parent' }, 409);
   }
   if (err instanceof PostNotFoundError || errorName(err) === 'PostNotFoundError') {
-    return c.json({ error: (err as Error).message, code: 'not_found' }, 404);
+    // Generic not-found: the post id and any workspace context must not leak,
+    // so a guessed cross-workspace id is indistinguishable from an absent id.
+    return c.json({ error: 'not found', code: 'not_found' }, 404);
   }
   if (err instanceof CommentNotFoundError) {
-    return c.json({ error: err.message, code: 'not_found' }, 404);
+    // Generic not-found: the comment id and any workspace context must not
+    // leak, so a guessed cross-workspace id is indistinguishable from an
+    // absent id. Same shape/status as the PostNotFoundError and
+    // workspace_mismatch redaction paths above and below.
+    return c.json({ error: 'not found', code: 'not_found' }, 404);
   }
   // Cross-workspace resource access (read/status/comment metadata) must not
   // leak the target workspace's existence: translate workspace_mismatch into a

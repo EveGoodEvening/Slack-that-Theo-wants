@@ -914,6 +914,151 @@ describe('C7 metadata redaction / least-privilege (no cross-workspace leakage)',
 
 // ---------------------------------------------------------------------------
 
+describe('C7 redaction parity: true not-found vs cross-workspace are indistinguishable', () => {
+  // The redaction contract requires that a guessed cross-workspace id yields a
+  // response with the same JSON shape, status, and error string as a genuinely
+  // absent id, so an attacker cannot infer whether the target exists in another
+  // workspace. These tests assert byte-for-byte parity of the {error, code}
+  // body and status across the status / read-post / subtree / thread paths.
+
+  async function expectGenericNotFound(
+    res: Response,
+  ): Promise<{ code: string; error: string }> {
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { code: string; error: string };
+    expect(body.code).toBe('not_found');
+    expect(body.error).toBe('not found');
+    // No id, workspace, or internal code leaks.
+    expect(JSON.stringify(body)).not.toContain('workspace_mismatch');
+    expect(JSON.stringify(body)).not.toMatch(/ws[AB]/);
+    return body;
+  }
+
+  it('GET /agents/status/:postId: true missing vs cross-workspace are identical', async () => {
+    twoWorkspaceFixture();
+    domain.createPost({
+      id: 'pBparity',
+      workspaceId: 'wsB',
+      authorActorId: 'humanB',
+      content: 'wsB',
+      lastActivityAt: '2026-01-01T00:00:00.000Z',
+    });
+    const issued = credentials.issue({ actorId: 'agentA', workspaceId: 'wsA' });
+    const headers = bearerToken(issued.secret);
+
+    const missing = await app().request('/agents/status/does-not-exist', { headers });
+    const cross = await app().request('/agents/status/pBparity', { headers });
+
+    const missingBody = await expectGenericNotFound(missing);
+    const crossBody = await expectGenericNotFound(cross);
+    expect(crossBody).toEqual(missingBody);
+  });
+
+  it('GET /agents/posts/:postId: true missing vs cross-workspace are identical', async () => {
+    twoWorkspaceFixture();
+    domain.createPost({
+      id: 'pBparity2',
+      workspaceId: 'wsB',
+      authorActorId: 'humanB',
+      content: 'wsB',
+      lastActivityAt: '2026-01-01T00:00:00.000Z',
+    });
+    const issued = credentials.issue({ actorId: 'agentA', workspaceId: 'wsA' });
+    const headers = bearerToken(issued.secret);
+
+    const missing = await app().request('/agents/posts/does-not-exist', { headers });
+    const cross = await app().request('/agents/posts/pBparity2', { headers });
+
+    const missingBody = await expectGenericNotFound(missing);
+    const crossBody = await expectGenericNotFound(cross);
+    expect(crossBody).toEqual(missingBody);
+  });
+
+  it('GET /agents/comments/:id/subtree: true missing vs cross-workspace are identical', async () => {
+    twoWorkspaceFixture();
+    domain.createPost({
+      id: 'pBparity3',
+      workspaceId: 'wsB',
+      authorActorId: 'humanB',
+      content: 'wsB',
+      lastActivityAt: '2026-01-01T00:00:00.000Z',
+    });
+    domain.createComment({
+      id: 'cBparity3',
+      workspaceId: 'wsB',
+      rootPostId: 'pBparity3',
+      authorActorId: 'humanB',
+      content: 'wsB comment',
+      createdAt: '2026-01-02T00:00:00.000Z',
+    });
+    const issued = credentials.issue({ actorId: 'agentA', workspaceId: 'wsA' });
+    const headers = bearerToken(issued.secret);
+
+    const missing = await app().request('/agents/comments/does-not-exist/subtree', { headers });
+    const cross = await app().request('/agents/comments/cBparity3/subtree', { headers });
+
+    const missingBody = await expectGenericNotFound(missing);
+    const crossBody = await expectGenericNotFound(cross);
+    expect(crossBody).toEqual(missingBody);
+  });
+
+  it('GET /agents/posts/:postId/thread: true missing vs cross-workspace are identical', async () => {
+    twoWorkspaceFixture();
+    domain.createPost({
+      id: 'pBparity4',
+      workspaceId: 'wsB',
+      authorActorId: 'humanB',
+      content: 'wsB',
+      lastActivityAt: '2026-01-01T00:00:00.000Z',
+    });
+    const issued = credentials.issue({ actorId: 'agentA', workspaceId: 'wsA' });
+    const headers = bearerToken(issued.secret);
+
+    const missing = await app().request('/agents/posts/does-not-exist/thread', { headers });
+    const cross = await app().request('/agents/posts/pBparity4/thread', { headers });
+
+    const missingBody = await expectGenericNotFound(missing);
+    const crossBody = await expectGenericNotFound(cross);
+    expect(crossBody).toEqual(missingBody);
+  });
+
+  it('POST /agents/posts/:postId/comments: true missing vs cross-workspace write are identical', async () => {
+    twoWorkspaceFixture();
+    domain.createPost({
+      id: 'pBparity5',
+      workspaceId: 'wsB',
+      authorActorId: 'humanB',
+      content: 'wsB',
+      lastActivityAt: '2026-01-01T00:00:00.000Z',
+    });
+    const issued = credentials.issue({ actorId: 'agentA', workspaceId: 'wsA' });
+    const headers = {
+      ...bearerToken(issued.secret),
+      'content-type': 'application/json',
+    };
+
+    const missing = await app().request('/agents/posts/does-not-exist/comments', {
+      method: 'POST',
+      headers: { ...headers, ...idempotencyHeader('parity-missing') },
+      body: JSON.stringify({ content: 'x' }),
+    });
+    const cross = await app().request('/agents/posts/pBparity5/comments', {
+      method: 'POST',
+      headers: { ...headers, ...idempotencyHeader('parity-cross') },
+      body: JSON.stringify({ content: 'x' }),
+    });
+
+    const missingBody = await expectGenericNotFound(missing);
+    const crossBody = await expectGenericNotFound(cross);
+    expect(crossBody).toEqual(missingBody);
+    // Neither write was performed.
+    expect(domain.countCommentsForPost('does-not-exist')).toBe(0);
+    expect(domain.countCommentsForPost('pBparity5')).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
 describe('C7 credential lifecycle via the HTTP API', () => {
   it('POST /agents/credentials issues a one-time secret and the agent can use it', async () => {
     twoWorkspaceFixture();
