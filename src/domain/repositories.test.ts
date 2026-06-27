@@ -91,7 +91,8 @@ function expectLiveComment(comment: ReturnType<DomainRepository['getComment']>) 
 
 describe('C1 migrations', () => {
   it('applies cleanly on a fresh database', () => {
-    expect(appliedMigrations(db)).toEqual([1]);
+    // C1a registers migration 0002 alongside 0001; both apply on a fresh DB.
+    expect(appliedMigrations(db)).toEqual([1, 2]);
     // Core tables exist.
     const tables = db
       .prepare(
@@ -122,7 +123,7 @@ describe('C1 migrations', () => {
   it('is idempotent when re-applied after a rollback', () => {
     migrateDown(db, migrations, 1);
     migrateUp(db, migrations);
-    expect(appliedMigrations(db)).toEqual([1]);
+    expect(appliedMigrations(db)).toEqual([1, 2]);
     const repo = new DomainRepository(db);
     const { post } = fixture(repo);
     expect(post.id).toBe('post1');

@@ -91,3 +91,43 @@ These are recorded here so later chunks do not re-litigate them.
   comment/reply inserts into a soft-deleted post or any soft-deleted comment
   ancestor; repository reads return tombstones (redacted author/content,
   preserved identity and tree structure).
+
+
+## C1a decisions (security baseline)
+
+These are recorded here so later chunks do not re-litigate them.
+
+- **Membership model:** a `workspace_member` table (migration 0002) with one
+  row per (workspace_id, actor_id) and a `role` discriminator constrained to
+  `'read' | 'write'` (`'write'` implies `'read'`). An actor is a member of
+  exactly its own workspace; a composite FK to `actor(workspace_id, id)`
+  enforces membership cannot exist in a workspace the actor does not belong
+  to. The full membership lifecycle (invites, shares, multi-workspace
+  membership, role changes) is deferred to C9; this table is the durable
+  backbone C9 extends.
+- **Auto-membership:** a trigger seeds a `'write'` `workspace_member` row
+  whenever an actor is inserted, so every actor is a member of its own
+  workspace with write access by default. C9 replaces this with explicit
+  invite/share.
+- **Principal resolution (stubbed):** `resolvePrincipal` maps a request to a
+  `Principal` (actor + workspace + kind + role) via stubbed `x-actor-id` /
+  `x-workspace-id` headers, validated against the membership table. This is
+  the ONLY place that knows how to extract an identity from a request in C1a;
+  C9 swaps it for real sign-in (session cookies / tokens) while keeping the
+  `Principal` shape and the middleware that consume it. The resolver depends
+  on a narrow `PrincipalRequest` interface (`header(name)`) so C9 can replace
+  extraction without touching the membership-validation core.
+- **Authorization middleware:** a single Hono middleware (`authMiddleware`)
+  resolves the principal and stores it on the context as `principal`;
+  `requireRole('read' | 'write')` adds a route-level role baseline. Every
+  later exposed surface (C2/C3/C7/C8) routes through this middleware.
+  Per-resource workspace checks use `assertCanRead` / `assertCanWrite` against
+  `c.get('principal')`. `AuthorizationError` maps to 401 (missing/unknown
+  principal) or 403 (membership/role/workspace mismatch) with a stable
+  machine-readable `code`.
+- **Scope/filter helpers:** pure functions over a `Principal`
+  (`filterByScope`, `readableByScope`, `workspaceScopePredicate`,
+  `authorizeWriteBatch`) are the shared contract C2 (feed), C3 (subtree),
+  C7 (agent feed polling), and C8 (realtime event fan-out) apply before
+  ordering/pagination to exclude cross-workspace records for both human and
+  agent principals. C1a exposes the helpers without exposing those surfaces.
