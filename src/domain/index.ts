@@ -1,5 +1,5 @@
 export { bumpPostLastActivity, DomainRepository } from './repositories.js';
-export { isCommentTombstone } from './types.js';
+export { isCommentTombstone, isPostTombstone } from './types.js';
 export type {
   Actor,
   ActorKind,
@@ -8,5 +8,6 @@ export type {
   CommentView,
   Post,
   PostTombstone,
+  PostView,
   Workspace,
 } from './types.js';

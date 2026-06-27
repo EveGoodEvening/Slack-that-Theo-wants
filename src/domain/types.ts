@@ -63,6 +63,11 @@ export interface CommentTombstone {
   isDeleted: true;
 }
 
+/**
+ * A post rendered as a tombstone when soft-deleted: author/content and activity
+ * metadata are redacted while identity, workspace scope, and deletion time are
+ * preserved for read paths.
+ */
 export interface PostTombstone {
   id: string;
   workspaceId: string;
@@ -70,9 +75,17 @@ export interface PostTombstone {
   isDeleted: true;
 }
 
+/** Discriminated union of a live or tombstoned post. */
+export type PostView = Post | PostTombstone;
+
 /** Discriminated union of a live or tombstoned comment node. */
 export type CommentView = CommentNode | CommentTombstone;
+
+export function isPostTombstone(post: PostView): post is PostTombstone {
+  return (post as PostTombstone).isDeleted === true;
+}
 
 export function isCommentTombstone(node: CommentView): node is CommentTombstone {
   return (node as CommentTombstone).isDeleted === true;
 }
+

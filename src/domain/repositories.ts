@@ -3,9 +3,11 @@ import type {
   Actor,
   ActorKind,
   CommentNode,
-  CommentView,
   CommentTombstone,
+  CommentView,
   Post,
+  PostTombstone,
+  PostView,
   Workspace,
 } from './types.js';
 
@@ -23,14 +25,15 @@ import type {
 // ---------------------------------------------------------------------------
 
 /**
- * Atomically bump a post's `lastActivityAt` to `at`.
+ * Atomically bump a post's `lastActivityAt` to at least `at`.
  *
  * This is the SINGLE shared bump helper owned by C1. Every new comment/reply
  * must update the root post's `lastActivityAt` through this function, inside
  * the same transaction as the insert, so the feed-ordering invariant is a
- * data-layer guarantee rather than a caller convention.
+ * data-layer guarantee rather than a caller convention. The bump is monotonic:
+ * out-of-order older activity never moves the feed-ordering field backward.
  *
- * Returns the number of rows updated (0 if the post does not exist).
+ * Returns the number of rows touched (0 if the post does not exist).
  */
 export function bumpPostLastActivity(
   db: BetterSqliteDatabase,
@@ -38,8 +41,15 @@ export function bumpPostLastActivity(
   at: string,
 ): number {
   const info = db
-    .prepare('UPDATE post SET last_activity_at = ? WHERE id = ?')
-    .run(at, postId);
+    .prepare(
+      `UPDATE post
+       SET last_activity_at = CASE
+         WHEN last_activity_at < ? THEN ?
+         ELSE last_activity_at
+       END
+       WHERE id = ?`,
+    )
+    .run(at, at, postId);
   return info.changes;
 }
 
@@ -134,10 +144,13 @@ export class DomainRepository {
     if (created === undefined) {
       throw new Error(`createPost: insert of ${input.id} did not persist`);
     }
+    if ('isDeleted' in created) {
+      throw new Error(`createPost: insert of ${input.id} unexpectedly returned a tombstone`);
+    }
     return created;
   }
 
-  getPost(id: string): Post | undefined {
+  getPost(id: string): PostView | undefined {
     const row = this.db
       .prepare(
         `SELECT id, workspace_id AS workspaceId, author_actor_id AS authorActorId,
@@ -146,6 +159,16 @@ export class DomainRepository {
          FROM post WHERE id = ?`,
       )
       .get(id) as Post | undefined;
+    if (row === undefined) return undefined;
+    if (row.deletedAt !== null) {
+      const tombstone: PostTombstone = {
+        id: row.id,
+        workspaceId: row.workspaceId,
+        deletedAt: row.deletedAt,
+        isDeleted: true,
+      };
+      return tombstone;
+    }
     return row;
   }
 
@@ -204,7 +227,8 @@ export class DomainRepository {
   /**
    * Create a reply to an existing comment_node at arbitrary depth. Atomically
    * bumps the root post's `lastActivityAt` via the shared bump helper inside
-   * the same transaction. Rejects a soft-deleted parent (trigger-enforced).
+   * the same transaction. Rejects inserts into a soft-deleted subtree
+   * (trigger-enforced).
    */
   createReply(input: {
     id: string;
@@ -298,13 +322,15 @@ export class DomainRepository {
       .prepare(
         `WITH RECURSIVE subtree AS (
            SELECT id, workspace_id, root_post_id, parent_id, author_actor_id,
-                  content, created_at, deleted_at, 0 AS depth
+                  content, created_at, deleted_at, 0 AS depth,
+                  created_at || char(31) || id AS sort_path
            FROM comment_node
            WHERE id = ?
            UNION ALL
            SELECT c.id, c.workspace_id, c.root_post_id, c.parent_id,
                   c.author_actor_id, c.content, c.created_at, c.deleted_at,
-                  s.depth + 1 AS depth
+                  s.depth + 1 AS depth,
+                  s.sort_path || char(30) || c.created_at || char(31) || c.id AS sort_path
            FROM comment_node c
            JOIN subtree s ON c.parent_id = s.id
          )
@@ -312,7 +338,7 @@ export class DomainRepository {
                 parent_id AS parentId, author_actor_id AS authorActorId,
                 content, created_at AS createdAt, deleted_at AS deletedAt, depth
          FROM subtree
-         ORDER BY depth, created_at, id`,
+         ORDER BY sort_path`,
       )
       .all(rootId) as (CommentNode & { depth: number })[];
 

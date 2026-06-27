@@ -11,6 +11,7 @@ import {
   bumpPostLastActivity,
   DomainRepository,
   isCommentTombstone,
+  isPostTombstone,
 } from './index.js';
 
 /**
@@ -70,6 +71,14 @@ function fixture(repo: DomainRepository) {
     lastActivityAt: '2026-06-27T00:00:00.000Z',
   });
   return { ws, human, agent, post };
+}
+
+function expectLivePost(post: ReturnType<DomainRepository['getPost']>) {
+  expect(post).toBeDefined();
+  if (post === undefined) throw new Error('post missing');
+  expect(isPostTombstone(post)).toBe(false);
+  if (isPostTombstone(post)) throw new Error('expected live post');
+  return post;
 }
 
 describe('C1 migrations', () => {
@@ -192,6 +201,54 @@ describe('C1 parent/child constraints and arbitrary depth', () => {
     expect(subtree[DEPTH]?.node.id).toBe(`n${DEPTH}`);
   });
 
+  it('preserves stable depth-first preorder for branching subtrees', () => {
+    const repo = new DomainRepository(db);
+    const { ws, human, post } = fixture(repo);
+
+    const root = repo.createComment({
+      id: 'root',
+      workspaceId: ws.id,
+      rootPostId: post.id,
+      authorActorId: human.id,
+      content: 'root',
+      createdAt: '2026-06-27T00:00:01.000Z',
+    });
+    const a = repo.createReply({
+      id: 'a',
+      workspaceId: ws.id,
+      rootPostId: post.id,
+      parentId: root.id,
+      authorActorId: human.id,
+      content: 'a',
+      createdAt: '2026-06-27T00:00:02.000Z',
+    });
+    repo.createReply({
+      id: 'b',
+      workspaceId: ws.id,
+      rootPostId: post.id,
+      parentId: root.id,
+      authorActorId: human.id,
+      content: 'b',
+      createdAt: '2026-06-27T00:00:03.000Z',
+    });
+    repo.createReply({
+      id: 'a-1',
+      workspaceId: ws.id,
+      rootPostId: post.id,
+      parentId: a.id,
+      authorActorId: human.id,
+      content: 'a child',
+      createdAt: '2026-06-27T00:00:04.000Z',
+    });
+
+    expect(repo.getSubtree(root.id).map((entry) => entry.node.id)).toEqual([
+      'root',
+      'a',
+      'a-1',
+      'b',
+    ]);
+  });
+
   it('rejects a reply whose parent does not exist (FK violation)', () => {
     const repo = new DomainRepository(db);
     const { ws, human, post } = fixture(repo);
@@ -206,6 +263,28 @@ describe('C1 parent/child constraints and arbitrary depth', () => {
         createdAt: '2026-06-27T00:00:01.000Z',
       }),
     ).toThrowError(/FOREIGN KEY constraint failed/);
+  });
+
+  it('rejects a self-parent reply node', () => {
+    const repo = new DomainRepository(db);
+    const { ws, human, post } = fixture(repo);
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO comment_node
+             (id, workspace_id, root_post_id, parent_id, author_actor_id, content, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          'self-parent',
+          ws.id,
+          post.id,
+          'self-parent',
+          human.id,
+          'cycle',
+          '2026-06-27T00:00:01.000Z',
+        ),
+    ).toThrowError(/CHECK constraint failed/);
   });
 
   it('rejects a comment whose root post does not exist (FK violation)', () => {
@@ -293,11 +372,11 @@ describe('C1 shared post-activity bump helper', () => {
   it('bumpPostLastActivity atomically updates the post ordering field', () => {
     const repo = new DomainRepository(db);
     const { post } = fixture(repo);
-    const before = repo.getPost(post.id)?.lastActivityAt;
+    const before = expectLivePost(repo.getPost(post.id)).lastActivityAt;
     const next = '2026-06-27T00:00:42.000Z';
     const changes = bumpPostLastActivity(db, post.id, next);
     expect(changes).toBe(1);
-    const after = repo.getPost(post.id)?.lastActivityAt;
+    const after = expectLivePost(repo.getPost(post.id)).lastActivityAt;
     expect(after).toBe(next);
     expect(after).not.toBe(before);
   });
@@ -318,7 +397,7 @@ describe('C1 shared post-activity bump helper', () => {
       content: 'comment',
       createdAt: at,
     });
-    expect(repo.getPost(post.id)?.lastActivityAt).toBe(at);
+    expect(expectLivePost(repo.getPost(post.id)).lastActivityAt).toBe(at);
   });
 
   it('a nested reply at depth N bumps the root post lastActivityAt atomically', () => {
@@ -334,7 +413,7 @@ describe('C1 shared post-activity bump helper', () => {
       content: 'root comment',
       createdAt: '2026-06-27T00:00:01.000Z',
     });
-    expect(repo.getPost(post.id)?.lastActivityAt).toBe('2026-06-27T00:00:01.000Z');
+    expect(expectLivePost(repo.getPost(post.id)).lastActivityAt).toBe('2026-06-27T00:00:01.000Z');
 
     let parentId = root.id;
     for (let i = 1; i <= 10; i++) {
@@ -349,12 +428,12 @@ describe('C1 shared post-activity bump helper', () => {
         createdAt: at,
       });
       // The bump is atomic with the insert: immediately readable.
-      expect(repo.getPost(post.id)?.lastActivityAt).toBe(at);
+      expect(expectLivePost(repo.getPost(post.id)).lastActivityAt).toBe(at);
       parentId = node.id;
     }
 
     // Final ordering field equals the deepest reply's timestamp.
-    expect(repo.getPost(post.id)?.lastActivityAt).toBe('2026-06-27T00:00:11.000Z');
+    expect(expectLivePost(repo.getPost(post.id)).lastActivityAt).toBe('2026-06-27T00:00:11.000Z');
   });
 
   it('an agent-authored reply bumps the root post identically to a human reply', () => {
@@ -369,7 +448,45 @@ describe('C1 shared post-activity bump helper', () => {
       content: 'agent bump',
       createdAt: at,
     });
-    expect(repo.getPost(post.id)?.lastActivityAt).toBe(at);
+    expect(expectLivePost(repo.getPost(post.id)).lastActivityAt).toBe(at);
+  });
+
+  it('does not regress lastActivityAt for out-of-order comments or replies', () => {
+    const repo = new DomainRepository(db);
+    const { ws, human, post } = fixture(repo);
+    const newest = '2026-06-27T00:00:10.000Z';
+    const older = '2026-06-27T00:00:05.000Z';
+
+    const comment = repo.createComment({
+      id: 'newer-comment',
+      workspaceId: ws.id,
+      rootPostId: post.id,
+      authorActorId: human.id,
+      content: 'newer comment',
+      createdAt: newest,
+    });
+    expect(expectLivePost(repo.getPost(post.id)).lastActivityAt).toBe(newest);
+
+    repo.createReply({
+      id: 'older-reply',
+      workspaceId: ws.id,
+      rootPostId: post.id,
+      parentId: comment.id,
+      authorActorId: human.id,
+      content: 'older reply',
+      createdAt: older,
+    });
+    expect(expectLivePost(repo.getPost(post.id)).lastActivityAt).toBe(newest);
+
+    repo.createComment({
+      id: 'older-comment',
+      workspaceId: ws.id,
+      rootPostId: post.id,
+      authorActorId: human.id,
+      content: 'older comment',
+      createdAt: older,
+    });
+    expect(expectLivePost(repo.getPost(post.id)).lastActivityAt).toBe(newest);
   });
 });
 
@@ -460,12 +577,35 @@ describe('C1 soft-delete tombstone behavior', () => {
 
     const deleted = repo.getPost(post.id);
     expect(deleted).toBeDefined();
-    expect(deleted?.deletedAt).toBe('2026-06-27T00:00:10.000Z');
-    // The post row (and its comment children) are not hard-removed.
-    expect(deleted?.content).toBe('First post');
+    if (deleted === undefined) throw new Error('post tombstone missing');
+    expect(isPostTombstone(deleted)).toBe(true);
+    if (isPostTombstone(deleted)) {
+      expect(deleted.deletedAt).toBe('2026-06-27T00:00:10.000Z');
+      expect(deleted.workspaceId).toBe(ws.id);
+      expect((deleted as { authorActorId?: string }).authorActorId).toBeUndefined();
+      expect((deleted as { content?: string }).content).toBeUndefined();
+      expect((deleted as { lastActivityAt?: string }).lastActivityAt).toBeUndefined();
+    }
 
     const comments = repo.getFirstLevelComments(post.id);
     expect(comments).toHaveLength(1);
+  });
+
+  it('rejects a first-level comment under a soft-deleted post', () => {
+    const repo = new DomainRepository(db);
+    const { ws, human, post } = fixture(repo);
+    repo.softDeletePost(post.id, '2026-06-27T00:00:10.000Z');
+
+    expect(() =>
+      repo.createComment({
+        id: 'under-deleted-post',
+        workspaceId: ws.id,
+        rootPostId: post.id,
+        authorActorId: human.id,
+        content: 'comment under deleted post',
+        createdAt: '2026-06-27T00:00:11.000Z',
+      }),
+    ).toThrowError(/cannot insert into a soft-deleted subtree/);
   });
 
   it('rejects a reply into a soft-deleted subtree (data-layer backstop)', () => {
@@ -491,6 +631,41 @@ describe('C1 soft-delete tombstone behavior', () => {
         content: 'reply into deleted',
         createdAt: '2026-06-27T00:00:11.000Z',
       }),
-    ).toThrowError(/cannot reply into a soft-deleted subtree/);
+    ).toThrowError(/cannot insert into a soft-deleted subtree/);
+  });
+
+  it('rejects a reply under a deleted ancestor even when the direct parent is live', () => {
+    const repo = new DomainRepository(db);
+    const { ws, human, post } = fixture(repo);
+    const root = repo.createComment({
+      id: 'deleted-ancestor',
+      workspaceId: ws.id,
+      rootPostId: post.id,
+      authorActorId: human.id,
+      content: 'ancestor',
+      createdAt: '2026-06-27T00:00:01.000Z',
+    });
+    const liveChild = repo.createReply({
+      id: 'live-child',
+      workspaceId: ws.id,
+      rootPostId: post.id,
+      parentId: root.id,
+      authorActorId: human.id,
+      content: 'live child',
+      createdAt: '2026-06-27T00:00:02.000Z',
+    });
+    repo.softDeleteComment(root.id, '2026-06-27T00:00:10.000Z');
+
+    expect(() =>
+      repo.createReply({
+        id: 'under-deleted-ancestor',
+        workspaceId: ws.id,
+        rootPostId: post.id,
+        parentId: liveChild.id,
+        authorActorId: human.id,
+        content: 'blocked descendant',
+        createdAt: '2026-06-27T00:00:11.000Z',
+      }),
+    ).toThrowError(/cannot insert into a soft-deleted subtree/);
   });
 });

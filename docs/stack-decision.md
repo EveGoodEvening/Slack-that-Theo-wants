@@ -78,13 +78,16 @@ These are recorded here so later chunks do not re-litigate them.
   type; it does not redefine it.
 - **Feed-bump invariant:** a single shared helper
   (`bumpPostLastActivity`) performs the atomic `post.last_activity_at` update
-  inside the same transaction as every comment/reply insert. C2 and C3 reuse
-  it and must not invent competing bump logic.
+  inside the same transaction as every comment/reply insert. The helper is
+  monotonic: out-of-order older comment/reply timestamps do not move the
+  feed-ordering field backward. C2 and C3 reuse it and must not invent
+  competing bump logic.
 - **Workspace boundary:** enforced at the data layer via composite FKs
   (`(workspace_id, author_actor_id)` → `actor(workspace_id, id)`) and a
   consistency trigger that rejects a comment whose workspace differs from its
   root post or whose parent belongs to a different workspace/root post.
 - **Soft-delete:** `deleted_at` nullable timestamp on `post` and
-  `comment_node`; hard delete is out of MVP scope. A trigger rejects replies
-  into a soft-deleted subtree; repository reads return tombstones (redacted
-  author/content, preserved structure and children).
+  `comment_node`; hard delete is out of MVP scope. A trigger rejects new
+  comment/reply inserts into a soft-deleted post or any soft-deleted comment
+  ancestor; repository reads return tombstones (redacted author/content,
+  preserved identity and tree structure).

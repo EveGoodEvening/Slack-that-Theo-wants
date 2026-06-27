@@ -31,7 +31,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
 | Chunk | Status       | Notes |
 | ----- | ------------ | ----- |
 | C0    | done         | Verified: npm install, test, dev health route, build, lint, typecheck |
-| C1    | done         | Verified: npm install, test, build, lint, typecheck |
+| C1    | in progress  | Review fixes applied; verification pending per no-command instruction |
 | C1a   | not started  | Depends on C1; must land before C2/C3 expose endpoints |
 | C2    | not started  | Depends on C1, C1a |
 | C3    | not started  | Depends on C1, C1a |
@@ -59,12 +59,12 @@ Rules (mirrored from `docs/implementation-plan.md`):
 - [x] Define entities: workspace/group, actor (human or agent), post, comment/reply tree node. C1 owns the actor schema including the human/agent discriminator and actor-polymorphism constraints; C7 only adds agent credentials/control-plane access on top
 - [x] Model comment/reply as a tree node with `parentId`, `rootPostId`, `authorActorId`, content, timestamps
 - [x] Add `lastActivityAt` on post; define it as the feed-ordering field
-- [x] Define and implement the shared post-activity bump helper (atomic `post.lastActivityAt` update on any new comment/reply) so C2 and C3 reuse one implementation and never invent competing bump logic
-- [x] Implement atomic update of `post.lastActivityAt` on any new comment/reply insertion via the shared bump helper
-- [x] Add `deletedAt` nullable timestamp (soft-delete) on post and comment/reply tree nodes; hard delete is out of MVP scope
-- [x] Add migration(s) creating all tables with constraints (FK parent/child, actor polymorphism, workspace boundary, soft-delete column)
-- [x] Choose and implement unlimited-depth storage strategy (adjacency list + recursive query, or materialized path) — record the choice
-- [x] Add repository/schema tests: arbitrary-depth insertion, parent/child constraints, invalid parent rejection, `lastActivityAt` updates on every nested reply, soft-delete tombstone behavior, actor polymorphism (human and agent rows satisfy the actor reference)
+- [~] Define and implement the shared post-activity bump helper (atomic, monotonic `post.lastActivityAt` update on any new comment/reply) so C2 and C3 reuse one implementation and never invent competing logic — review fix applied; verification pending
+- [~] Implement atomic update of `post.lastActivityAt` on any new comment/reply insertion via the shared bump helper — review fix applied; verification pending
+- [~] Add `deletedAt` nullable timestamp (soft-delete) on post and comment/reply tree nodes; hard delete is out of MVP scope — review fix applied for tombstone reads and deleted-subtree insert rejection; verification pending
+- [~] Add migration(s) creating all tables with constraints (FK parent/child, actor polymorphism, workspace boundary, soft-delete column) — review fix applied for self-parent and deleted-subtree constraints; verification pending
+- [~] Choose and implement unlimited-depth storage strategy (adjacency list + recursive query, or materialized path) — record the choice — review fix applied for depth-first preorder; verification pending
+- [~] Add repository/schema tests: arbitrary-depth insertion, parent/child constraints, invalid parent rejection, `lastActivityAt` updates on every nested reply, soft-delete tombstone behavior, actor polymorphism (human and agent rows satisfy the actor reference) — review regression tests added; verification pending
 
 ## C1a — Security baseline: principal, membership, authorization middleware
 
@@ -237,3 +237,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
 - 2026-06-27 — Chunk C1: in progress -> done — Orchestrator verified
   `npm install`, `npm test` (24 tests), `npm run build`, `npm run lint`, and
   `npm run typecheck` in worktree `chunk/C1`.
+- 2026-06-27 — Chunk C1: review fixes applied without running commands per
+  instruction. Added C1-only fixes for deleted-subtree insert rejection,
+  post tombstones, monotonic activity bumps, self-parent rejection, and
+  depth-first subtree preorder; C1 remains `in progress` pending verification.

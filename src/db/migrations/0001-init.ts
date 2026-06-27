@@ -98,7 +98,8 @@ export const migration0001Init: Migration = {
         REFERENCES actor (workspace_id, id) ON DELETE RESTRICT,
       -- A node's workspace must match its root post's workspace. Enforced by
       -- trigger below for the parent case; this CHECK guards the direct case.
-      CHECK (workspace_id IS NOT NULL AND root_post_id IS NOT NULL)
+      CHECK (workspace_id IS NOT NULL AND root_post_id IS NOT NULL),
+      CHECK (parent_id IS NULL OR parent_id <> id)
     );
     `,
     'CREATE INDEX idx_comment_root ON comment_node (root_post_id, created_at, id);',
@@ -137,25 +138,41 @@ export const migration0001Init: Migration = {
     END;
     `,
     `
-    -- Reject replies into a soft-deleted subtree at the data layer. C3 also
-    -- enforces this at the API layer; this trigger is the durable backstop.
-    CREATE TRIGGER enforce_no_reply_into_deleted_parent
+    -- Reject inserts into a soft-deleted post or comment subtree at the data
+    -- layer. C3 also enforces this at the API layer; this trigger is the
+    -- durable backstop for first-level comments and replies at any depth.
+    CREATE TRIGGER enforce_no_insert_into_deleted_subtree
     BEFORE INSERT ON comment_node
     FOR EACH ROW
-    WHEN NEW.parent_id IS NOT NULL
     BEGIN
       SELECT CASE
         WHEN EXISTS (
-          SELECT 1 FROM comment_node c
-          WHERE c.id = NEW.parent_id AND c.deleted_at IS NOT NULL
+          SELECT 1 FROM post p
+          WHERE p.id = NEW.root_post_id AND p.deleted_at IS NOT NULL
         )
-        THEN RAISE(ABORT, 'cannot reply into a soft-deleted subtree')
+        THEN RAISE(ABORT, 'cannot insert into a soft-deleted subtree')
+      END;
+
+      SELECT CASE
+        WHEN NEW.parent_id IS NOT NULL AND EXISTS (
+          WITH RECURSIVE ancestors AS (
+            SELECT id, parent_id, deleted_at
+            FROM comment_node
+            WHERE id = NEW.parent_id
+            UNION ALL
+            SELECT c.id, c.parent_id, c.deleted_at
+            FROM comment_node c
+            JOIN ancestors a ON c.id = a.parent_id
+          )
+          SELECT 1 FROM ancestors WHERE deleted_at IS NOT NULL
+        )
+        THEN RAISE(ABORT, 'cannot insert into a soft-deleted subtree')
       END;
     END;
     `,
   ],
   down: [
-    'DROP TRIGGER IF EXISTS enforce_no_reply_into_deleted_parent;',
+    'DROP TRIGGER IF EXISTS enforce_no_insert_into_deleted_subtree;',
     'DROP TRIGGER IF EXISTS enforce_comment_workspace_consistency;',
     'DROP INDEX IF EXISTS idx_comment_workspace;',
     'DROP INDEX IF EXISTS idx_comment_parent;',
