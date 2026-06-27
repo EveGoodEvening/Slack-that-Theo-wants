@@ -251,3 +251,37 @@ These are recorded here so later chunks do not re-litigate them.
   `is-loading` / `aria-busy` on form submit, with a `<noscript>` fallback that
   still submits normally. Server-rendered content is already present, so a
   true loading spinner is only meaningful for the create-post round-trip.
+
+## C5 decisions (conversation UI: comments and nested replies)
+
+These are recorded here so later chunks do not re-litigate them.
+
+- **Route shape:** the post detail conversation UI lives under the existing
+  server-rendered human UI mount at `GET /feed/:postId`, with mutation forms at
+  `POST /feed/:postId/comments` and
+  `POST /feed/:postId/comments/:commentId/replies`. Keeping the detail page
+  under `/feed` lets C4 post cards link to "View conversation" without adding a
+  second browser UI root; JSON API routes remain the C2/C3 `/posts` and
+  `/comments` surfaces.
+- **Service consumption:** the detail page calls the C2 `PostService.readPost`
+  in-process for the post body and live comment metadata, and calls the C3
+  `CommentService.getFullThread` / `createComment` / `createReply` methods for
+  the tree and form mutations. It does not self-HTTP-call API routes or
+  duplicate feed-bump logic; reply bumps remain the C1/C3 data-layer invariant.
+- **Renderer boundary:** post bodies continue through `renderPostContent`; every
+  comment and reply node is adapted to `renderCommentContent` with surface
+  `comment` or `reply`. Tombstones are adapted to `{ isDeleted: true }`. Raw
+  stored post/comment/reply content is never emitted by templates; static ids,
+  actors, timestamps, counts, and error text use the shared UI `escapeText`
+  helper.
+- **Principal resolution:** C5 reuses the C4 shared UI principal path
+  (`resolveUiPrincipal` over headers, query params, or hidden form fields, then
+  C1a membership validation). C9 can replace credential extraction without
+  changing the post detail route or form contracts.
+- **Tree presentation:** first-level comments render inline below the post, each
+  live comment/reply has its own reply composer, and replies show compact
+  "Replying to @actor" context from C3 `replyToActorId`. Nested branches are
+  indented with semantic lists, deep branches switch to `<details>`, and a
+  maximum render-depth safeguard collapses descendants beyond the configured
+  limit so pathological trees cannot explode the server-rendered document.
+
