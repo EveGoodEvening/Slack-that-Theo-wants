@@ -1,15 +1,19 @@
 import { Hono } from 'hono';
 import type { MembershipRepository } from '../security/membership.js';
-import {
-  membershipToPrincipal,
-  PRINCIPAL_HEADERS,
-} from '../security/principal.js';
 import { AuthorizationError, type Principal } from '../security/types.js';
 import {
   renderPostContent,
   type RenderableContent,
 } from '../rendering/index.js';
 import type { PostService, PostDTO } from '../api/postService.js';
+import {
+  ACTOR_FIELD,
+  ACTOR_HEADER_FIELD,
+  escapeText,
+  resolveUiPrincipal,
+  WORKSPACE_FIELD,
+  WORKSPACE_HEADER_FIELD,
+} from './shared.js';
 
 /**
  * C4 — Minimal human UI: feed and post creation.
@@ -19,14 +23,17 @@ import type { PostService, PostDTO } from '../api/postService.js';
  * re-sort), and every post body is rendered through the C3a `renderPostContent`
  * sanitizer — raw stored content is never emitted. A create-post form posts
  * back to this route and calls the C2 `createPost` service, then re-renders the
- * feed so the new post appears at the top.
+ * feed so the new post appears at the top. Each post card links to its C5 post
+ * detail view at `/feed/:postId` where the conversation (comments + nested
+ * replies) lives.
  *
- * Principal resolution reuses the C1a membership-validation core. The UI reads
- * the stubbed `x-actor-id` / `x-workspace-id` credentials from request headers
- * first (so API-style clients work), then browser `actorId` / `workspaceId`
- * query parameters on GET and form fields on POST. The pair
- * is always validated against the membership table via
- * `membership.resolveMembership`; C9 swaps the extraction, not the validation.
+ * Principal resolution reuses the C1a membership-validation core via the shared
+ * `resolveUiPrincipal` helper (see `./shared.ts`). The UI reads the stubbed
+ * `x-actor-id` / `x-workspace-id` credentials from request headers first (so
+ * API-style clients work), then browser `actorId` / `workspaceId` query
+ * parameters on GET and form fields on POST. The pair is always validated
+ * against the membership table via `membership.resolveMembership`; C9 swaps the
+ * extraction, not the validation.
  *
  * States:
  * - empty: the feed has no posts for the principal's workspace.
@@ -41,89 +48,24 @@ export interface FeedRouteDeps {
   service: PostService;
 }
 
-/** Browser query/form credential field names plus C1a header fallback names. */
-const ACTOR_FIELD = 'actorId';
-const WORKSPACE_FIELD = 'workspaceId';
-const ACTOR_HEADER_FIELD = PRINCIPAL_HEADERS.actorId;
-const WORKSPACE_HEADER_FIELD = PRINCIPAL_HEADERS.workspaceId;
-
-/**
- * Resolve a principal from a Hono request using the C1a membership core.
- * Headers take precedence (API clients), then browser/header-named query params,
- * then browser/header-named form fields. Throws AuthorizationError on failure.
- */
-function resolveFeedPrincipal(
-  req: {
-    header(name: string): string | undefined;
-    query(name: string): string | undefined;
-  },
-  bodyParams: Record<string, string | undefined>,
-  membership: MembershipRepository,
-): Principal {
-  const actorId =
-    req.header(ACTOR_HEADER_FIELD) ??
-    req.query(ACTOR_HEADER_FIELD) ??
-    req.query(ACTOR_FIELD) ??
-    bodyParams[ACTOR_FIELD] ??
-    bodyParams[ACTOR_HEADER_FIELD];
-  const workspaceId =
-    req.header(WORKSPACE_HEADER_FIELD) ??
-    req.query(WORKSPACE_HEADER_FIELD) ??
-    req.query(WORKSPACE_FIELD) ??
-    bodyParams[WORKSPACE_FIELD] ??
-    bodyParams[WORKSPACE_HEADER_FIELD];
-
-  if (!actorId || !workspaceId) {
-    throw new AuthorizationError(
-      'missing_principal',
-      'missing principal credentials (x-actor-id / x-workspace-id or actorId / workspaceId)',
-      401,
-    );
-  }
-
-  const resolved = membership.resolveMembership(workspaceId, actorId);
-  if (resolved === undefined) {
-    throw new AuthorizationError(
-      'principal_not_found',
-      `actor ${actorId} is not a member of workspace ${workspaceId}`,
-      401,
-    );
-  }
-  return membershipToPrincipal(resolved);
-}
-
-/** HTML-escape the five significant characters for static template text. */
-function escapeText(input: string): string {
-  return input.replace(/[&<>"']/g, (ch) => {
-    switch (ch) {
-      case '&':
-        return '&amp;';
-      case '<':
-        return '&lt;';
-      case '>':
-        return '&gt;';
-      case '"':
-        return '&quot;';
-      default:
-        return '&#39;';
-    }
-  });
-}
-
 /** Render a single post card. Body content goes through C3a renderPostContent. */
-function renderPostCard(post: PostDTO): string {
+function renderPostCard(post: PostDTO, principal: Principal): string {
   // The feed endpoint only returns live posts (tombstones are excluded by the
   // C2 service), so we always have content here. We still route through
   // renderPostContent so a tombstone input would render safely if the contract
   // ever changes.
   const renderable: RenderableContent = { content: post.content };
   const rendered = renderPostContent(renderable);
+  const conversationHref = `/feed/${encodeURIComponent(post.id)}?${ACTOR_FIELD}=${encodeURIComponent(
+    principal.actorId,
+  )}&${WORKSPACE_FIELD}=${encodeURIComponent(principal.workspaceId)}`;
   return `    <article class="post-card" data-post-id="${escapeText(post.id)}">
       <header class="post-meta">
         <span class="post-author">${escapeText(post.authorActorId)}</span>
         <time class="post-activity" datetime="${escapeText(post.lastActivityAt)}">${escapeText(post.lastActivityAt)}</time>
       </header>
       <div class="post-body">${rendered.html}</div>
+      <p class="post-link"><a href="${escapeText(conversationHref)}">View conversation</a></p>
     </article>`;
 }
 
@@ -133,7 +75,7 @@ function renderFeedDocument(
   principal: Principal,
   opts: { error?: string | undefined; notice?: string | undefined } = {},
 ): string {
-  const cards = posts.map(renderPostCard).join('\n');
+  const cards = posts.map((post) => renderPostCard(post, principal)).join('\n');
   const body =
     posts.length === 0
       ? '    <p class="feed-empty">No posts yet. Create the first one above.</p>'
@@ -165,6 +107,7 @@ function renderFeedDocument(
     .post-meta { display: flex; justify-content: space-between; color: #555; font-size: 0.85rem; margin-bottom: 0.5rem; }
     .post-body p:first-child { margin-top: 0; }
     .post-body p:last-child { margin-bottom: 0; }
+    .post-link { margin: 0.5rem 0 0; font-size: 0.85rem; }
     .feed-empty { color: #666; font-style: italic; }
     .feed-error { color: #b00; }
     .feed-notice { color: #060; }
@@ -236,7 +179,7 @@ export function feedRoutes(deps: FeedRouteDeps): Hono {
   route.get('/', (c) => {
     let principal: Principal;
     try {
-      principal = resolveFeedPrincipal(c.req, {}, membership);
+      principal = resolveUiPrincipal(c.req, {}, membership);
     } catch (err) {
       if (err instanceof AuthorizationError) {
         return c.html(
@@ -285,12 +228,14 @@ export function feedRoutes(deps: FeedRouteDeps): Hono {
       [ACTOR_HEADER_FIELD]:
         typeof actorHeaderField === 'string' ? actorHeaderField : undefined,
       [WORKSPACE_HEADER_FIELD]:
-        typeof workspaceHeaderField === 'string' ? workspaceHeaderField : undefined,
+        typeof workspaceHeaderField === 'string'
+          ? workspaceHeaderField
+          : undefined,
     };
 
     let principal: Principal;
     try {
-      principal = resolveFeedPrincipal(c.req, bodyParams, membership);
+      principal = resolveUiPrincipal(c.req, bodyParams, membership);
     } catch (err) {
       if (err instanceof AuthorizationError) {
         return c.html(

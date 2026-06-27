@@ -1,9 +1,11 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { commentRoutes } from './api/commentRoutes.js';
+import { CommentServiceImpl } from './api/commentService.js';
 import { postRoutes } from './api/postRoutes.js';
 import { PostServiceImpl } from './api/postService.js';
 import { feedRoutes } from './ui/feed.js';
+import { postDetailRoutes } from './ui/postDetail.js';
 import { DomainRepository } from './domain/repositories.js';
 import { migrateUp, migrations, openDatabase } from './db/index.js';
 import { healthRoute } from './health.js';
@@ -30,9 +32,22 @@ export function createApp(deps?: AppDeps): Hono {
     // C3 comment/reply surface. Mounted at root because it spans /posts/.../comments
     // and /comments/.../replies prefixes; the route file owns the full paths.
     app.route('/', commentRoutes(deps));
-    // C4 minimal human UI: server-rendered feed + create-post form consuming
-    // the C2 post feed service and the C3a safe renderer.
-    app.route('/feed', feedRoutes({ membership: deps.membership, service: new PostServiceImpl(deps.repository) }));
+    // C4/C5 minimal human UI: feed + post detail conversation view consuming
+    // the C2 post service, C3 comment service, and C3a safe renderer.
+    const postService = new PostServiceImpl(deps.repository);
+    const commentService = new CommentServiceImpl(deps.repository);
+    app.route(
+      '/feed',
+      feedRoutes({ membership: deps.membership, service: postService }),
+    );
+    app.route(
+      '/feed',
+      postDetailRoutes({
+        membership: deps.membership,
+        postService,
+        commentService,
+      }),
+    );
   }
   app.get('/', (c) =>
     c.json({

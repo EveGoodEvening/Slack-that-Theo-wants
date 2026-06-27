@@ -128,6 +128,9 @@ export interface CommentService {
     createdAt?: string;
   }): CommentDTO;
 
+  /** Fetch one comment/reply after enforcing the caller's read boundary. */
+  getComment(input: { principal: Principal; commentId: string }): CommentViewDTO;
+
   /** Fetch a subtree rooted at one comment/reply (inclusive), depth-first. */
   getSubtree(input: { principal: Principal; commentId: string }): SubtreeResult;
 
@@ -253,6 +256,15 @@ export class CommentServiceImpl implements CommentService {
       createdAt: input.createdAt ?? now,
     });
     return toDTO(node, replyToActorId);
+  }
+
+  getComment(input: { principal: Principal; commentId: string }): CommentViewDTO {
+    const comment = this.repo.getComment(input.commentId);
+    if (comment === undefined) {
+      throw new CommentNotFoundError(input.commentId);
+    }
+    assertCanRead(input.principal, commentWorkspaceId(comment, this.repo));
+    return viewToDTO(comment, rootExternalParentAuthorById(comment, this.repo));
   }
 
   getSubtree(input: { principal: Principal; commentId: string }): SubtreeResult {

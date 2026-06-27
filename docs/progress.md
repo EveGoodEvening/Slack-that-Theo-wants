@@ -37,7 +37,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
 | C3    | done         | Verified: npm install, test (151 tests), build, lint, typecheck |
 | C3a   | done         | Verified: npm install, test (109 tests), build, lint, typecheck |
 | C4    | done         | Verified: npm install, test (163 tests), build, lint, typecheck |
-| C5    | not started  | Depends on C3, C4, C3a |
+| C5    | done         | Verified: npm install, test (171 tests), build, lint, typecheck |
 | C6    | not started  | Depends on C3a, C4, C5 |
 | C7    | not started  | Depends on C1, C1a, C2, C3 |
 | C8    | not started  | Depends on C1a, C2, C3, C4, C5 (optionally C7) |
@@ -118,15 +118,15 @@ Rules (mirrored from `docs/implementation-plan.md`):
 
 ## C5 — Conversation UI: first-level comments and nested replies
 
-- [ ] Implement post detail view consuming C2 read-post and C3 subtree endpoints
-- [ ] Render first-level comments inline under the post
-- [ ] Implement nested reply composer on each comment/reply
-- [ ] Implement indentation and collapse strategy for deep trees (with rendering safeguard for very deep nesting)
-- [ ] Show reply-target context (who is being replied to) without clogging the main post
-- [ ] Render all comment/reply content through the C3a safe renderer/sanitizer (never render raw stored content)
-- [ ] Add E2E test proving replying to different comments renders in the correct location
-- [ ] Add E2E test proving a reply on an old post bumps it to the top of the feed
-- [ ] Add test proving unsafe HTML/script in comment/reply content is escaped/sanitized on every nested reply surface (via the C3a renderer)
+- [x] Implement post detail view consuming C2 read-post and C3 subtree endpoints — implemented as server-rendered `/feed/:postId` over C2 read-post + C3 full-thread service; verified by orchestrator
+- [x] Render first-level comments inline under the post — implemented in `src/ui/postDetail.ts`; verified by orchestrator
+- [x] Implement nested reply composer on each comment/reply — implemented for live nodes; tombstones render without a composer; verified by orchestrator
+- [x] Implement indentation and collapse strategy for deep trees (with rendering safeguard for very deep nesting) — semantic nested lists, `<details>` collapse, and max-depth safeguard implemented; verified by orchestrator
+- [x] Show reply-target context (who is being replied to) without clogging the main post — displays compact `Replying to @actor` context from C3 `replyToActorId`; verified by orchestrator
+- [x] Render all comment/reply content through the C3a safe renderer/sanitizer (never render raw stored content) — `renderCommentContent` used for every comment/reply/tombstone surface; verified by orchestrator
+- [x] Add E2E test proving replying to different comments renders in the correct location — added in `src/ui/postDetail.test.ts`; verified by orchestrator
+- [x] Add E2E test proving a reply on an old post bumps it to the top of the feed — added in `src/ui/postDetail.test.ts`; verified by orchestrator
+- [x] Add test proving unsafe HTML/script in comment/reply content is escaped/sanitized on every nested reply surface (via the C3a renderer) — added in `src/ui/postDetail.test.ts`; verified by orchestrator
 
 ## C6 — Code block / message authoring experience
 
@@ -304,3 +304,4 @@ Rules (mirrored from `docs/implementation-plan.md`):
   write-scope denials to 403 HTML errors. Orchestrator verified `npm install`,
   `npm test` (163 tests), `npm run build`, `npm run lint`, and
   `npm run typecheck`. C4 is `done`.
+- 2026-06-27 — Chunk C5: not started -> done — Implemented server-rendered post detail UI at `/feed/:postId`, first-level comments, nested replies, reply composers, reply-target context, deep-tree collapse/safeguard, shared UI principal helpers, C3a rendering for comment/reply surfaces, index mount, and C5 UI tests for correct reply placement, feed bump after replying to an old post, nested sanitization, deep-tree safeguard, cross-post reply rejection, and first-level composer. Orchestrator verified `npm install`, `npm test` (171 tests), `npm run build`, `npm run lint`, and `npm run typecheck` after review fixes. C5 is `done`.
