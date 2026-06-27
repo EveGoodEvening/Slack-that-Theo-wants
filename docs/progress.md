@@ -34,7 +34,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
 | C1    | done         | Verified: npm test (30 tests), build, lint, typecheck after review fixes |
 | C1a   | done         | Verified: npm install, test (65 tests), build, lint, typecheck |
 | C2    | done         | Verified: npm install, test (132 tests), build, lint, typecheck |
-| C3    | not started  | Depends on C1, C1a |
+| C3    | done         | Verified: npm install, test (149 tests), build, lint, typecheck |
 | C3a   | done         | Verified: npm install, test (109 tests), build, lint, typecheck |
 | C4    | not started  | Depends on C2, C3a |
 | C5    | not started  | Depends on C3, C4, C3a |
@@ -87,16 +87,16 @@ Rules (mirrored from `docs/implementation-plan.md`):
 
 ## C3 — Comment/reply API with unlimited nesting
 
-- [ ] Define service interface for comment/reply creation and subtree fetch
-- [ ] Implement create first-level comment on a post
-- [ ] Implement create reply to any comment (arbitrary depth)
-- [ ] Preserve `replyToActorId` / target context so users can reply to different people without clogging the main post
-- [ ] Implement fetch-subtree and fetch-full-thread endpoints
-- [ ] Ensure every reply triggers the shared C1 atomic `lastActivityAt` bump helper on the root post (no duplicate implementation)
-- [ ] Define deleted-parent behavior: reject replies to a soft-deleted parent (cannot reply into a deleted subtree); fetching a subtree containing a deleted node returns a tombstone placeholder (redacted author/content) while preserving retrievable children
-- [ ] Define stable sibling ordering for replies under the same parent (e.g., `createdAt ASC, nodeId ASC`)
-- [ ] Enforce workspace/group boundary on every endpoint via the C1a authorization middleware
-- [ ] Add API tests: arbitrary-depth insertion, invalid/missing parent rejection, deleted-parent behavior (reply rejected + tombstone with children preserved), sibling ordering, feed bump side effect on every nested reply
+- [x] Define service interface for comment/reply creation and subtree fetch — src/api/commentService.ts (CommentService)
+- [x] Implement create first-level comment on a post — CommentServiceImpl.createComment → POST /posts/:postId/comments
+- [x] Implement create reply to any comment (arbitrary depth) — CommentServiceImpl.createReply → POST /comments/:parentId/replies
+- [x] Preserve `replyToActorId` / target context so users can reply to different people without clogging the main post — derived from the parent node's authorActorId at read time; null for first-level comments and redacted (null) when the parent is a tombstone; queryable via subtree/thread fetch
+- [x] Implement fetch-subtree and fetch-full-thread endpoints — GET /comments/:id/subtree, GET /posts/:postId/thread
+- [x] Ensure every reply triggers the shared C1 atomic `lastActivityAt` bump helper on the root post (no duplicate implementation) — delegates to DomainRepository.createComment/createReply which run bumpPostLastActivity in-transaction
+- [x] Define deleted-parent behavior: reject replies to a soft-deleted parent (cannot reply into a deleted subtree); fetching a subtree containing a deleted node returns a tombstone placeholder (redacted author/content) while preserving retrievable children — DeletedParentError → 409 at the API layer; data-layer trigger is the backstop; tombstones preserve children
+- [x] Define stable sibling ordering for replies under the same parent (e.g., `createdAt ASC, nodeId ASC`) — repository recursive-CTE sort_path encodes createdAt ASC, id ASC; assembleTree preserves it
+- [x] Enforce workspace/group boundary on every endpoint via the C1a authorization middleware — authMiddleware + requireRole on every route; assertCanRead/assertCanWrite in the service before any read/write
+- [x] Add API tests: arbitrary-depth insertion, invalid/missing parent rejection, deleted-parent behavior (reply rejected + tombstone with children preserved), sibling ordering, feed bump side effect on every nested reply — src/api/commentRoutes.test.ts verified by orchestrator
 
 ## C3a — Safe content rendering baseline
 
@@ -283,3 +283,9 @@ Rules (mirrored from `docs/implementation-plan.md`):
   `app.sqlite`, removed generated `app.db*` artifacts, and reverified
   `npm test` (132 tests), `npm run build`, `npm run lint`, and
   `npm run typecheck`. C2 remains `done`.
+- 2026-06-27 — Chunk C3: not started -> done — Implemented comment/reply
+  API with arbitrary-depth replies, subtree/thread fetch, C1 bump-helper reuse,
+  deleted-parent behavior, stable sibling ordering, and C1a authorization;
+  orchestrator verified `npm install`, `npm test` (149 tests),
+  `npm run build`, `npm run lint`, and `npm run typecheck` after type fixes.
+  C3 is `done`.

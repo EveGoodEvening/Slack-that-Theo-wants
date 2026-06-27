@@ -1,5 +1,6 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
+import { commentRoutes } from './api/commentRoutes.js';
 import { postRoutes } from './api/postRoutes.js';
 import { DomainRepository } from './domain/repositories.js';
 import { migrateUp, migrations, openDatabase } from './db/index.js';
@@ -24,6 +25,9 @@ export function createApp(deps?: AppDeps): Hono {
   app.route('/health', healthRoute());
   if (deps) {
     app.route('/posts', postRoutes(deps));
+    // C3 comment/reply surface. Mounted at root because it spans /posts/.../comments
+    // and /comments/.../replies prefixes; the route file owns the full paths.
+    app.route('/', commentRoutes(deps));
   }
   app.get('/', (c) =>
     c.json({
@@ -31,6 +35,7 @@ export function createApp(deps?: AppDeps): Hono {
       status: 'ok',
       health: '/health',
       posts: deps ? '/posts' : undefined,
+      comments: deps ? '/comments' : undefined,
     }),
   );
   return app;
