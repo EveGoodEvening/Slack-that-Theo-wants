@@ -1,5 +1,6 @@
 import { CODE_BLOCK_CSS, COPY_CODE_SCRIPT, PREVIEW_SCRIPT } from './codeBlockUi.js';
 import { Hono } from 'hono';
+import { ACTIVITY_EVENT_TYPES } from '../api/activityEvents.js';
 import {
   CommentNotFoundError,
   DeletedParentError,
@@ -200,6 +201,154 @@ ${comments.map((comment) => renderCommentNode(comment, postId, principal, 0)).jo
     </ol>`;
 }
 
+function principalQuery(principal: Principal): string {
+  return `${ACTOR_FIELD}=${encodeURIComponent(principal.actorId)}&${WORKSPACE_FIELD}=${encodeURIComponent(principal.workspaceId)}`;
+}
+
+function renderConversationSection(input: {
+  post: PostDTO;
+  totalCount: number;
+  firstLevelCount: number;
+  comments: CommentTreeNode[];
+  principal: Principal;
+}): string {
+  const { post, totalCount, firstLevelCount, comments, principal } = input;
+  return `  <section class="conversation" aria-live="polite">
+    <h2>Comments</h2>
+    <p class="counts">${totalCount} total ${totalCount === 1 ? 'comment/reply' : 'comments/replies'}; ${firstLevelCount} first-level ${firstLevelCount === 1 ? 'comment' : 'comments'}.</p>
+${renderCommentComposer(post.id, principal)}
+${renderConversation(comments, post.id, principal)}
+    <p class="conversation-realtime-status" data-realtime-status="idle">Live comment updates stream when this browser supports EventSource.</p>
+  </section>`;
+}
+
+function renderPostDetailRealtimeScript(postId: string, principal: Principal): string {
+  const eventUrl = `/events?${principalQuery(principal)}`;
+  const fragmentUrl = `/feed/${encodeURIComponent(postId)}/fragments/conversation?${principalQuery(principal)}`;
+  const eventTypes = JSON.stringify([
+    ACTIVITY_EVENT_TYPES.commentCreated,
+    ACTIVITY_EVENT_TYPES.replyCreated,
+  ]);
+  return `    // C8 progressive enhancement: refresh this conversation on scoped activity.
+    (function () {
+      if (typeof EventSource === 'undefined') return;
+      var source = new EventSource(${JSON.stringify(eventUrl)});
+      var postId = ${JSON.stringify(postId)};
+      var eventTypes = ${eventTypes};
+      var latestRefreshToken = 0;
+      var latestActivityAt = null;
+      function eventActivityAt(payload) {
+        if (payload && typeof payload.rootPostLastActivityAt === 'string') return payload.rootPostLastActivityAt;
+        return null;
+      }
+      function composerTextareas(root) {
+        if (!root || !root.querySelectorAll) return [];
+        return Array.prototype.slice.call(root.querySelectorAll('textarea'));
+      }
+      function composerForm(textarea) {
+        return textarea && textarea.closest ? textarea.closest('form') : null;
+      }
+      function isConversationComposer(form) {
+        var classes = ' ' + ((form && form.getAttribute('class')) || '') + ' ';
+        return classes.indexOf(' comment-composer ') >= 0 || classes.indexOf(' reply-composer ') >= 0;
+      }
+      function composerKey(textarea) {
+        if (!textarea || textarea.getAttribute('name') !== 'content') return null;
+        var form = composerForm(textarea);
+        if (!form || !isConversationComposer(form)) return null;
+        var id = textarea.getAttribute('id');
+        if (id) return 'id:' + id;
+        var action = form.getAttribute('action');
+        return action ? 'action:' + action : null;
+      }
+      function captureComposers(current) {
+        var captured = Object.create(null);
+        var active = document.activeElement || null;
+        composerTextareas(current).forEach(function (textarea) {
+          var key = composerKey(textarea);
+          if (!key) return;
+          var form = composerForm(textarea);
+          if (!form) return;
+          captured[key] = {
+            form: form,
+            textarea: textarea,
+            value: typeof textarea.value === 'string' ? textarea.value : '',
+            wasFocused: textarea === active,
+            selectionStart: typeof textarea.selectionStart === 'number' ? textarea.selectionStart : null,
+            selectionEnd: typeof textarea.selectionEnd === 'number' ? textarea.selectionEnd : null,
+            selectionDirection: typeof textarea.selectionDirection === 'string' ? textarea.selectionDirection : 'none'
+          };
+        });
+        return captured;
+      }
+      function moveCapturedComposers(next, captured) {
+        var activeState = null;
+        composerTextareas(next).forEach(function (textarea) {
+          var key = composerKey(textarea);
+          var state = key ? captured[key] : null;
+          if (!state) return;
+          var nextForm = composerForm(textarea);
+          if (!nextForm) return;
+          state.textarea.value = state.value;
+          if (nextForm !== state.form) nextForm.replaceWith(state.form);
+          if (state.wasFocused) activeState = state;
+        });
+        return activeState;
+      }
+      function restoreComposerFocus(state) {
+        if (!state || !state.textarea || typeof state.textarea.focus !== 'function') return;
+        state.textarea.focus();
+        if (
+          typeof state.textarea.setSelectionRange === 'function' &&
+          state.selectionStart !== null &&
+          state.selectionEnd !== null
+        ) {
+          try {
+            state.textarea.setSelectionRange(
+              state.selectionStart,
+              state.selectionEnd,
+              state.selectionDirection || 'none',
+            );
+          } catch (_) {}
+        }
+      }
+      function refreshConversation(message) {
+        var payload;
+        try { payload = JSON.parse(message.data); } catch (_) { return; }
+        if (!payload || payload.rootPostId !== postId) return;
+        var activityAt = eventActivityAt(payload);
+        if (activityAt && latestActivityAt && activityAt < latestActivityAt) return;
+        if (activityAt && (!latestActivityAt || activityAt > latestActivityAt)) latestActivityAt = activityAt;
+        var refreshToken = ++latestRefreshToken;
+        var refreshActivityAt = activityAt || latestActivityAt;
+        fetch(${JSON.stringify(fragmentUrl)}, { headers: { Accept: 'text/html' } })
+          .then(function (response) {
+            if (!response.ok) throw new Error('conversation fragment fetch failed');
+            return response.text();
+          })
+          .then(function (html) {
+            if (refreshToken !== latestRefreshToken) return;
+            if (refreshActivityAt && latestActivityAt && refreshActivityAt < latestActivityAt) return;
+            var template = document.createElement('template');
+            template.innerHTML = html.trim();
+            var next = template.content.firstElementChild;
+            var current = document.querySelector('.conversation');
+            if (next && current) {
+              var activeComposer = moveCapturedComposers(next, captureComposers(current));
+              current.replaceWith(next);
+              restoreComposerFocus(activeComposer);
+            }
+          })
+          .catch(function () {
+            if (refreshToken !== latestRefreshToken) return;
+            var status = document.querySelector('[data-realtime-status]');
+            if (status) status.textContent = 'Live updates paused; refresh to catch up.';
+          });
+      }
+      eventTypes.forEach(function (type) { source.addEventListener(type, refreshConversation); });
+    })();`;
+}
+
 function renderPostDetailDocument(input: {
   post: PostDTO;
   totalCount: number;
@@ -242,6 +391,7 @@ function renderPostDetailDocument(input: {
     .reply-depth-safeguard, .conversation-empty { color: #666; font-style: italic; }
     .conversation-error { color: #b00; }
     .conversation-notice { color: #060; }
+    .conversation-realtime-status { color: #666; font-size: 0.85rem; }
 ${CODE_BLOCK_CSS}
   </style>
 </head>
@@ -254,13 +404,15 @@ ${CODE_BLOCK_CSS}
 ${errorBlock}
 ${noticeBlock}
 ${renderPostArticle(post)}
-  <section class="conversation" aria-live="polite">
-    <h2>Comments</h2>
-    <p class="counts">${totalCount} total ${totalCount === 1 ? 'comment/reply' : 'comments/replies'}; ${firstLevelCount} first-level ${firstLevelCount === 1 ? 'comment' : 'comments'}.</p>
-${renderCommentComposer(post.id, principal)}
-${renderConversation(comments, post.id, principal)}
-  </section>
+${renderConversationSection({
+    post,
+    totalCount,
+    firstLevelCount,
+    comments,
+    principal,
+  })}
   <script>
+${renderPostDetailRealtimeScript(post.id, principal)}
 ${COPY_CODE_SCRIPT}
 ${PREVIEW_SCRIPT}
   </script>
@@ -321,6 +473,29 @@ function renderCurrentState(input: {
   });
 }
 
+function renderConversationFragment(input: {
+  principal: Principal;
+  postId: string;
+  postService: PostService;
+  commentService: CommentService;
+}): string {
+  const read = input.postService.readPost({
+    principal: input.principal,
+    postId: input.postId,
+  });
+  const thread = input.commentService.getFullThread({
+    principal: input.principal,
+    postId: input.postId,
+  });
+  return renderConversationSection({
+    post: read.post,
+    totalCount: read.comments.totalCount,
+    firstLevelCount: read.comments.firstLevelCount,
+    comments: thread.comments,
+    principal: input.principal,
+  });
+}
+
 function mapConversationError(err: unknown): {
   status: 401 | 403 | 404 | 409 | 500;
   code: string;
@@ -345,6 +520,24 @@ function mapConversationError(err: unknown): {
 export function postDetailRoutes(deps: PostDetailRouteDeps): Hono {
   const route = new Hono();
   const { membership, postService, commentService } = deps;
+
+  route.get('/:postId/fragments/conversation', (c) => {
+    let principal: Principal;
+    try {
+      principal = resolveUiPrincipal(c.req, {}, membership);
+      return c.html(
+        renderConversationFragment({
+          principal,
+          postId: c.req.param('postId'),
+          postService,
+          commentService,
+        }),
+      );
+    } catch (err) {
+      const mapped = mapConversationError(err);
+      return c.text(mapped.message, mapped.status);
+    }
+  });
 
   route.get('/:postId', (c) => {
     let principal: Principal;

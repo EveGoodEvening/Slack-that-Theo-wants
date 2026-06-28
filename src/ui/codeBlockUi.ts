@@ -85,42 +85,46 @@ export const COPY_CODE_SCRIPT = `
     })();`;
 
 /**
- * Progressive-enhancement script for the composer preview toggle. Wires preview
- * toggle buttons with `data-preview-for="<textareaId>"` to POST the textarea's raw
- * value (plus the hidden `actorId` / `workspaceId` fields from the same
- * composer form) to `POST /feed/preview` and render the returned (sanitized)
- * HTML into the matching `.composer-preview` pane. The preview endpoint reuses
- * the C3a renderer and resolves the same C1a principal as live mutations, so
- * previewed content is sanitized identically to live content and the surface
- * stays behind the authorization baseline.
+ * Progressive-enhancement script for the composer preview toggle. Delegates
+ * clicks from preview toggle buttons with `data-preview-for="<textareaId>"` so
+ * controls inserted after initial page load (for example, realtime-swapped
+ * post-detail conversation fragments) use the same handler as server-rendered
+ * controls. The handler POSTs the textarea's raw value (plus the hidden
+ * `actorId` / `workspaceId` fields from the same composer form) to
+ * `POST /feed/preview` and renders the returned (sanitized) HTML into the
+ * matching `.composer-preview` pane. The preview endpoint reuses the C3a
+ * renderer and resolves the same C1a principal as live mutations, so previewed
+ * content is sanitized identically to live content and the surface stays behind
+ * the authorization baseline.
  */
 export const PREVIEW_SCRIPT = `
     (function () {
-      document.querySelectorAll('.preview-toggle[data-preview-for]').forEach(function (toggle) {
+      document.addEventListener('click', function (event) {
+        var target = event.target;
+        var toggle = target && target.closest ? target.closest('.preview-toggle[data-preview-for]') : null;
+        if (!toggle) return;
         var targetId = toggle.getAttribute('data-preview-for');
         if (!targetId) return;
         var textarea = document.getElementById(targetId);
         var pane = document.querySelector('.composer-preview[data-preview-for="' + targetId + '"]');
         if (!textarea || !pane) return;
-        toggle.addEventListener('click', function () {
-          var body = new URLSearchParams();
-          body.set('content', textarea.value || '');
-          var form = toggle.closest('form');
-          if (form) {
-            var actor = form.querySelector('input[name="actorId"]');
-            var ws = form.querySelector('input[name="workspaceId"]');
-            if (actor && actor.value) body.set('actorId', actor.value);
-            if (ws && ws.value) body.set('workspaceId', ws.value);
-          }
-          pane.innerHTML = '<span class="preview-label">Preview…</span>';
-          fetch('/feed/preview', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString() })
-            .then(function (r) { return r.text(); })
-            .then(function (html) {
-              pane.innerHTML = '<span class="preview-label">Preview</span>' + html;
-            })
-            .catch(function () {
-              pane.innerHTML = '<span class="preview-label">Preview unavailable</span>';
-            });
-        });
+        var body = new URLSearchParams();
+        body.set('content', textarea.value || '');
+        var form = toggle.closest('form');
+        if (form) {
+          var actor = form.querySelector('input[name="actorId"]');
+          var ws = form.querySelector('input[name="workspaceId"]');
+          if (actor && actor.value) body.set('actorId', actor.value);
+          if (ws && ws.value) body.set('workspaceId', ws.value);
+        }
+        pane.innerHTML = '<span class="preview-label">Preview…</span>';
+        fetch('/feed/preview', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString() })
+          .then(function (r) { return r.text(); })
+          .then(function (html) {
+            pane.innerHTML = '<span class="preview-label">Preview</span>' + html;
+          })
+          .catch(function () {
+            pane.innerHTML = '<span class="preview-label">Preview unavailable</span>';
+          });
       });
     })();`;

@@ -1,5 +1,7 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
+import { ActivityEventHub, type ActivityEventSource } from './api/activityEvents.js';
+import { activityRoutes } from './api/activityRoutes.js';
 import { agentRoutes } from './api/agentRoutes.js';
 import { CommentServiceImpl } from './api/commentService.js';
 import { commentRoutes } from './api/commentRoutes.js';
@@ -21,6 +23,8 @@ export interface AppDeps {
   membership: MembershipRepository;
   /** The underlying database connection, used when mounting C7 agent routes. */
   db?: import('./db/connection.js').BetterSqliteDatabase;
+  /** Shared in-process C8 event source; tests may inject one. */
+  activity?: ActivityEventSource;
 }
 
 /**
@@ -31,14 +35,17 @@ export function createApp(deps?: AppDeps): Hono {
   const app = new Hono();
   app.route('/health', healthRoute());
   if (deps) {
-    app.route('/posts', postRoutes(deps));
+    const activity = deps.activity ?? new ActivityEventHub();
+    const postService = new PostServiceImpl(deps.repository, activity);
+    const commentService = new CommentServiceImpl(deps.repository, activity);
+
+    app.route('/events', activityRoutes({ membership: deps.membership, events: activity }));
+    app.route('/posts', postRoutes({ ...deps, service: postService }));
     // C3 comment/reply surface. Mounted at root because it spans /posts/.../comments
     // and /comments/.../replies prefixes; the route file owns the full paths.
-    app.route('/', commentRoutes(deps));
+    app.route('/', commentRoutes({ ...deps, service: commentService }));
     // C4/C5 minimal human UI: feed + post detail conversation view consuming
     // the C2 post service, C3 comment service, and C3a safe renderer.
-    const postService = new PostServiceImpl(deps.repository);
-    const commentService = new CommentServiceImpl(deps.repository);
     app.route(
       '/feed',
       feedRoutes({ membership: deps.membership, service: postService }),
@@ -57,7 +64,16 @@ export function createApp(deps?: AppDeps): Hono {
     // logging, and rate limits layered on top. Mounted under /agents when the
     // caller supplies the underlying database-backed security stores.
     if (deps.db !== undefined) {
-      app.route('/agents', agentRoutes({ ...deps, db: deps.db }));
+      app.route(
+        '/agents',
+        agentRoutes({
+          ...deps,
+          db: deps.db,
+          activity,
+          postService,
+          commentService,
+        }),
+      );
     }
   }
   app.get('/', (c) =>
@@ -68,6 +84,7 @@ export function createApp(deps?: AppDeps): Hono {
       posts: deps ? '/posts' : undefined,
       comments: deps ? '/comments' : undefined,
       feed: deps ? '/feed' : undefined,
+      events: deps ? '/events' : undefined,
       agents: deps?.db !== undefined ? '/agents' : undefined,
     }),
   );

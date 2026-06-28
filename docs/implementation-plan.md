@@ -538,13 +538,13 @@ C7 dependency.
 
 ### Checklist
 
-- [ ] Choose and record transport (websocket, SSE, or polling)
-- [ ] Emit actor-agnostic events from the shared post/comment/reply services on post creation, comment/reply creation, and agent replies (so C7 agent endpoints dispatch through the same event path; C7 remains optional)
-- [ ] Define a versioned event contract: versioned event names/payloads, producer and consumer dispatch responsibilities (feed vs post-detail handlers), authorization/filtering rules per workspace/group, unknown-event behavior, and compatibility/rollback expectations
-- [ ] Filter realtime events by workspace/group membership via the C1a authorization middleware (no cross-workspace leakage)
-- [ ] Implement live feed reordering so bumped posts move to the top without refresh
-- [ ] Implement live post-detail update for new comments/replies
-- [ ] Add integration/E2E tests proving a background comment on an old post moves it to the top without manual refresh; each emitted event type reaches the intended feed and post-detail handlers; events do not leak across workspace/group boundaries
+- [ ] Choose and record transport (websocket, SSE, or polling) — implemented as SSE (`GET /events`); pending orchestrator verification before marking complete
+- [ ] Emit actor-agnostic events from the shared post/comment/reply services on post creation, comment/reply creation, and agent replies (so C7 agent endpoints dispatch through the same event path; C7 remains optional) — implemented via `ActivityEventHub` and service-level publishers; pending orchestrator verification
+- [ ] Define a versioned event contract: versioned event names/payloads, producer and consumer dispatch responsibilities (feed vs post-detail handlers), authorization/filtering rules per workspace/group, unknown-event behavior, and compatibility/rollback expectations — documented in `docs/stack-decision.md`; pending orchestrator verification
+- [ ] Filter realtime events by workspace/group membership via the C1a authorization middleware (no cross-workspace leakage) — `/events` resolves C1a principals and the hub scopes delivery by workspace; pending orchestrator verification
+- [ ] Implement live feed reordering so bumped posts move to the top without refresh — feed handler fetches `/feed/fragments/posts/:postId` and prepends/replaces cards; pending orchestrator verification
+- [ ] Implement live post-detail update for new comments/replies — detail handler fetches `/feed/:postId/fragments/conversation` for matching roots; pending orchestrator verification
+- [ ] Add integration/E2E tests proving a background comment on an old post moves it to the top without manual refresh; each emitted event type reaches the intended feed and post-detail handlers; events do not leak across workspace/group boundaries — targeted tests added; pending orchestrator verification
 
 ### Required verification
 

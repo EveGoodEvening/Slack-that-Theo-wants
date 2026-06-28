@@ -40,7 +40,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
 | C5    | done         | Verified: npm install, test (171 tests), build, lint, typecheck |
 | C6    | done         | Verified: npm install, test (192 tests), build, lint, typecheck |
 | C7    | done         | Verified: npm install, test (240 tests), build, lint, typecheck |
-| C8    | not started  | Depends on C1a, C2, C3, C4, C5 (optionally C7) |
+| C8    | done         | Verified: npm install, targeted realtime/preview tests (36 tests), full test (248 tests), build, lint, typecheck after review fixes |
 | C9    | not started  | Depends on C1a, C2, C3, C4, C7 |
 | C10   | not started  | Depends on all core flows |
 
@@ -151,13 +151,13 @@ Rules (mirrored from `docs/implementation-plan.md`):
 
 ## C8 — Realtime / activity updates
 
-- [ ] Choose and record transport (websocket, SSE, or polling)
-- [ ] Emit actor-agnostic events from the shared post/comment/reply services on post creation, comment/reply creation, and agent replies (so C7 agent endpoints dispatch through the same event path; C7 remains optional)
-- [ ] Define a versioned event contract: versioned event names/payloads, producer and consumer dispatch responsibilities (feed vs post-detail handlers), authorization/filtering rules per workspace/group, unknown-event behavior, and compatibility/rollback expectations
-- [ ] Filter realtime events by workspace/group membership via the C1a authorization middleware (no cross-workspace leakage)
-- [ ] Implement live feed reordering so bumped posts move to the top without refresh
-- [ ] Implement live post-detail update for new comments/replies
-- [ ] Add integration/E2E tests proving a background comment on an old post moves it to the top without manual refresh; each emitted event type reaches the intended feed and post-detail handlers; events do not leak across workspace/group boundaries
+- [x] Choose and record transport (websocket, SSE, or polling) — implemented as simple in-process SSE (`GET /events`) and recorded in stack decision; verified by orchestrator
+- [x] Emit actor-agnostic events from the shared post/comment/reply services on post creation, comment/reply creation, and agent replies (so C7 agent endpoints dispatch through the same event path; C7 remains optional) — implemented in `PostServiceImpl` / `CommentServiceImpl`, with C7 routes sharing those service instances; verified by orchestrator
+- [x] Define a versioned event contract: versioned event names/payloads, producer and consumer dispatch responsibilities (feed vs post-detail handlers), authorization/filtering rules per workspace/group, unknown-event behavior, and compatibility/rollback expectations — `slack.activity.{post,comment,reply}.created.v1` contract implemented and documented; verified by orchestrator
+- [x] Filter realtime events by workspace/group membership via the C1a authorization middleware (no cross-workspace leakage) — `/events` resolves C1a principals and `ActivityEventHub` scopes fan-out by workspace; verified by orchestrator
+- [x] Implement live feed reordering so bumped posts move to the top without refresh — feed EventSource handler fetches server-rendered card fragments and inserts/replaces changed posts by `lastActivityAt` order; executable handler coverage added in `src/ui/feed.test.ts`; verified by orchestrator
+- [x] Implement live post-detail update for new comments/replies — post-detail EventSource handler fetches and swaps the conversation fragment for matching root posts; executable handler coverage added in `src/ui/postDetail.test.ts`; verified by orchestrator
+- [x] Add integration/E2E tests for the C8 contract — `src/api/activityRoutes.test.ts` covers emitted event types and workspace filtering; executable feed/detail EventSource handler tests cover feed card replacement/reordering, out-of-order fetch race ordering, post-detail matching comment/reply swaps, stale fragment race handling, draft preservation, preview controls in swapped fragments, and unrelated/root-mismatched no-ops; verified by orchestrator
 
 ## C9 — Auth, workspace boundaries, collaboration base
 
@@ -359,3 +359,53 @@ Rules (mirrored from `docs/implementation-plan.md`):
   cross-workspace agent resource misses return identical generic 404 bodies.
   Orchestrator reverified `npm test` (240 tests), `npm run build`,
   `npm run lint`, and `npm run typecheck`. C7 remains `done`.
+- 2026-06-27 — Chunk C8: implementation pass in
+  `/root/gitfiles/Slack-that-Theo-wants-C8` — Chose SSE (`GET /events`) over
+  WebSockets/polling for the current Hono stack; added an in-process
+  `ActivityEventHub` with versioned actor-agnostic `slack.activity.*.v1`
+  events; wired publication from shared C2/C3 services so human routes and C7
+  agent writes share the same event path; mounted scoped SSE subscriptions;
+  added feed card and post-detail conversation fragment endpoints; added
+  progressive EventSource enhancement for feed reordering and conversation
+  refresh; and added targeted C8 integration/UI tests. Orchestrator verified
+  `npm install`, targeted C8 tests (`npm test -- src/api/activityRoutes.test.ts
+  src/ui/feed.test.ts src/ui/postDetail.test.ts`, 29 tests), full `npm test`
+  (244 tests), `npm run build`, `npm run lint`, and `npm run typecheck`. C8 is `done`.
+- 2026-06-27 — Chunk C8: review-fix pass in
+  `/root/gitfiles/Slack-that-Theo-wants-C8` — Bounded SSE per-subscriber
+  queues by dropping activity hints when stream backpressure reports no
+  capacity; added executable fake EventSource/fetch/minimal-DOM coverage for
+  feed card replacement/reordering and post-detail conversation swaps, including
+  unrelated/root-mismatched events, then fixed live feed ordering so concurrent
+  fragment fetches resolving out of order still render by activity timestamp.
+  Orchestrator verified targeted C8 tests (`npm test --
+  src/api/activityRoutes.test.ts src/ui/feed.test.ts src/ui/postDetail.test.ts`,
+  30 tests), full `npm test` (245 tests), `npm run build`, `npm run lint`,
+  and `npm run typecheck` after review fixes. C8 is `done`.
+- 2026-06-27 — Chunk C8: post-detail stale-fragment review blocker fixed in
+  `/root/gitfiles/Slack-that-Theo-wants-C8` — Added a post-detail freshness
+  guard so older conversation fragment responses cannot replace a newer
+  conversation, plus fake EventSource/fetch/minimal-DOM reverse-resolution
+  coverage in `src/ui/postDetail.test.ts`. Orchestrator verified targeted C8
+  tests (`npm test -- src/api/activityRoutes.test.ts src/ui/feed.test.ts
+  src/ui/postDetail.test.ts`, 31 tests), full `npm test` (246 tests),
+  `npm run build`, `npm run lint`, and `npm run typecheck`. C8 is `done`.
+- 2026-06-28 — Chunk C8: draft-preservation review blocker fixed in
+  `/root/gitfiles/Slack-that-Theo-wants-C8` — Post-detail realtime refresh now
+  preserves top-level and nested reply composer drafts/listeners/focus while
+  swapping conversation fragments. Added executable handler coverage for draft
+  preservation and lint-compliant fake DOM parsing. Orchestrator verified
+  targeted C8 tests (`npm test -- src/api/activityRoutes.test.ts
+  src/ui/feed.test.ts src/ui/postDetail.test.ts`, 32 tests), full `npm test`
+  (247 tests), `npm run build`, `npm run lint`, and `npm run typecheck`.
+  C8 is `done`.
+- 2026-06-28 — Chunk C8: preview-control rebinding blocker fixed in
+  `/root/gitfiles/Slack-that-Theo-wants-C8` — Composer preview clicks are now
+  delegated by the shared preview script, so preview controls in realtime-swapped
+  conversation fragments work without per-fragment rebinding or duplicate
+  handlers. Added executable fake EventSource/fetch/minimal-DOM coverage for a
+  newly inserted reply composer preview toggle.
+  Orchestrator verified targeted realtime/preview tests (`npm test --
+  src/api/activityRoutes.test.ts src/ui/feed.test.ts src/ui/postDetail.test.ts
+  src/ui/codeBlockUi.test.ts`, 36 tests), full `npm test` (248 tests),
+  `npm run build`, `npm run lint`, and `npm run typecheck`. C8 is `done`.
