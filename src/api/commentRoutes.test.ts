@@ -10,7 +10,7 @@ import {
 } from '../db/index.js';
 import { DomainRepository } from '../domain/index.js';
 import { MembershipRepository } from '../security/membership.js';
-import { PRINCIPAL_HEADERS } from '../security/principal.js';
+import { AuthRepository, sessionCookie } from '../security/auth.js';
 import { createApp, type AppDeps } from '../index.js';
 
 /**
@@ -31,6 +31,7 @@ import { createApp, type AppDeps } from '../index.js';
 let db: BetterSqliteDatabase;
 let domain: DomainRepository;
 let membership: MembershipRepository;
+let auth: AuthRepository;
 
 beforeAll(() => {
   db = openDatabase(':memory:');
@@ -49,18 +50,17 @@ beforeEach(() => {
   migrateUp(db, migrations);
   domain = new DomainRepository(db);
   membership = new MembershipRepository(db);
+  auth = new AuthRepository(db);
 });
 
 function app(): Hono {
-  const deps: AppDeps = { repository: domain, membership };
+  const deps: AppDeps = { repository: domain, membership, auth };
   return createApp(deps);
 }
 
 function headersFor(actorId: string, workspaceId: string): Record<string, string> {
-  return {
-    [PRINCIPAL_HEADERS.actorId]: actorId,
-    [PRINCIPAL_HEADERS.workspaceId]: workspaceId,
-  };
+  const session = auth.createSession({ actorId, workspaceId });
+  return { cookie: sessionCookie(session.secret) };
 }
 
 function jsonHeaders(actorId: string, workspaceId: string): Record<string, string> {

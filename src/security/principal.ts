@@ -1,65 +1,57 @@
+import {
+  type AuthRepository,
+  sessionSecretFromRequest,
+  type SessionPrincipalRequest,
+} from './auth.js';
 import { AuthorizationError, type Principal } from './types.js';
 import type { MembershipRepository, ResolvedMembership } from './membership.js';
 
 /**
- * C1a stubbed principal resolution.
+ * C9 sign-in-backed principal resolution.
  *
- * Maps a request to a Principal (actor + workspace + kind + role) using
- * stubbed auth headers. This is the ONLY place that knows how to extract an
- * identity from a request in C1a; C9 replaces this with real sign-in (session
- * cookies / tokens) while keeping the Principal shape and the middleware that
- * consume it.
- *
- * Stubbed header contract (C1a only — replaced by C9):
- * - `x-actor-id`:     the actor id (human or agent)
- * - `x-workspace-id`: the workspace/group the actor is acting in
- *
- * The resolver validates the (workspace, actor) pair against the membership
- * table. A missing header, unknown actor, or non-member yields an
- * AuthorizationError so the middleware can map it to a 401/403.
+ * Normal app/API requests resolve a Principal from an opaque session created by
+ * the local sign-in flow. Browser requests carry the session in the
+ * HttpOnly `sttw_session` cookie; API clients may send the same session secret
+ * as `Authorization: Bearer <session>`. Stubbed x-actor-id/x-workspace-id
+ * headers are intentionally no longer accepted on protected paths.
  */
 
-/**
- * The minimal request surface the resolver depends on. Hono's `c.req` satisfies
- * this (`request.header(name)`), and tests can pass a plain object. Keeping the
- * dependency narrow means C9 can swap the extraction without touching the
- * membership-validation core.
- */
-export interface PrincipalRequest {
-  header(name: string): string | undefined;
-}
-
-/** Header names for the C1a stubbed auth contract. */
-export const PRINCIPAL_HEADERS = {
-  actorId: 'x-actor-id',
-  workspaceId: 'x-workspace-id',
-} as const;
+/** The minimal request surface the resolver depends on. */
+export interface PrincipalRequest extends SessionPrincipalRequest {}
 
 /**
- * Resolve a Principal from a request using the stubbed auth headers and the
- * membership repository. Throws AuthorizationError on any failure.
+ * Resolve a Principal from a sign-in session. Throws AuthorizationError on any
+ * failure so the shared middleware maps missing/expired sessions to 401 and
+ * inactive memberships to 401/403 without leaking content.
  */
 export function resolvePrincipal(
   request: PrincipalRequest,
   membership: MembershipRepository,
+  auth: AuthRepository,
 ): Principal {
-  const actorId = request.header(PRINCIPAL_HEADERS.actorId);
-  const workspaceId = request.header(PRINCIPAL_HEADERS.workspaceId);
-
-  if (!actorId || !workspaceId) {
+  const secret = sessionSecretFromRequest(request);
+  if (secret === undefined) {
     throw new AuthorizationError(
       'missing_principal',
-      'missing principal credentials (x-actor-id / x-workspace-id)',
+      'missing sign-in session',
       401,
     );
   }
 
-  const resolved = membership.resolveMembership(workspaceId, actorId);
-  if (resolved === undefined) {
-    // Unknown actor or not a member of the workspace.
+  const session = auth.resolveSession(secret);
+  if (session === undefined) {
     throw new AuthorizationError(
       'principal_not_found',
-      `actor ${actorId} is not a member of workspace ${workspaceId}`,
+      'sign-in session is unknown, expired, or revoked',
+      401,
+    );
+  }
+
+  const resolved = membership.resolveMembership(session.workspaceId, session.actorId);
+  if (resolved === undefined) {
+    throw new AuthorizationError(
+      'principal_not_found',
+      `actor ${session.actorId} is not an active member of workspace ${session.workspaceId}`,
       401,
     );
   }
@@ -68,8 +60,9 @@ export function resolvePrincipal(
 }
 
 /**
- * Build a Principal from a resolved membership. Exported so tests and C9 can
- * construct principals directly without going through the request stub.
+ * Build a Principal from a resolved membership. Exported so tests, auth, and
+ * agent credential resolution can construct principals without duplicating the
+ * shape.
  */
 export function membershipToPrincipal(m: ResolvedMembership): Principal {
   return {

@@ -1,11 +1,12 @@
 import { Hono } from 'hono';
 import type { MembershipRepository } from '../security/membership.js';
+import type { AuthRepository } from '../security/auth.js';
 import {
   assertCanRead,
   authorizationErrorResponse,
   AuthorizationError,
   membershipToPrincipal,
-  PRINCIPAL_HEADERS,
+  resolvePrincipal,
   type AuthVariables,
   type Principal,
 } from '../security/index.js';
@@ -19,15 +20,16 @@ const ACTIVITY_STREAM_HIGH_WATER_MARK = 16;
 /** C8 SSE route dependencies. */
 export interface ActivityRouteDeps {
   membership: MembershipRepository;
+  auth: AuthRepository;
   events: ActivityEventSource;
 }
 
 /**
  * C8 realtime subscription surface.
  *
- * GET /events streams versioned server-sent events. Header credentials use the
- * same C1a names as API callers; browser EventSource callers may pass the same
- * values as query params because EventSource cannot set custom headers.
+ * GET /events streams versioned server-sent events. C9 uses the same
+ * sign-in-backed session resolver as the human API/UI routes; browser
+ * EventSource requests carry the HttpOnly session cookie automatically.
  */
 export function activityRoutes(deps: ActivityRouteDeps): Hono<{
   Variables: AuthVariables;
@@ -37,7 +39,7 @@ export function activityRoutes(deps: ActivityRouteDeps): Hono<{
   route.get('/', (c) => {
     let principal: Principal;
     try {
-      principal = resolveRealtimePrincipal(c.req, deps.membership);
+      principal = resolvePrincipal(c.req, deps.membership, deps.auth);
       assertCanRead(principal, principal.workspaceId);
     } catch (err) {
       if (err instanceof AuthorizationError) {
@@ -53,7 +55,15 @@ export function activityRoutes(deps: ActivityRouteDeps): Hono<{
     const stream = new ReadableStream<Uint8Array>(
       {
         start(controller) {
+          let closed = false;
+          const close = (): void => {
+            if (closed) return;
+            closed = true;
+            unsubscribe();
+            controller.close();
+          };
           const write = (chunk: string): void => {
+            if (closed) return;
             if (controller.desiredSize === null || controller.desiredSize <= 0) {
               // Activity events are hints; drop instead of accumulating
               // unbounded per-subscriber memory for a slow client.
@@ -63,6 +73,23 @@ export function activityRoutes(deps: ActivityRouteDeps): Hono<{
           };
           write(': c8-connected\n\n');
           unsubscribe = deps.events.subscribe(principal, (event) => {
+            const current = deps.membership.resolveMembership(
+              principal.workspaceId,
+              principal.actorId,
+            );
+            if (current === undefined) {
+              close();
+              return;
+            }
+            try {
+              assertCanRead(membershipToPrincipal(current), event.workspaceId);
+            } catch (err) {
+              if (err instanceof AuthorizationError) {
+                close();
+                return;
+              }
+              throw err;
+            }
             write(serializeActivitySse(event));
           });
         },
@@ -89,37 +116,3 @@ export function activityRoutes(deps: ActivityRouteDeps): Hono<{
   return route;
 }
 
-function resolveRealtimePrincipal(
-  req: {
-    header(name: string): string | undefined;
-    query(name: string): string | undefined;
-  },
-  membership: MembershipRepository,
-): Principal {
-  const actorId =
-    req.header(PRINCIPAL_HEADERS.actorId) ??
-    req.query(PRINCIPAL_HEADERS.actorId) ??
-    req.query('actorId');
-  const workspaceId =
-    req.header(PRINCIPAL_HEADERS.workspaceId) ??
-    req.query(PRINCIPAL_HEADERS.workspaceId) ??
-    req.query('workspaceId');
-
-  if (!actorId || !workspaceId) {
-    throw new AuthorizationError(
-      'missing_principal',
-      'missing principal credentials (x-actor-id / x-workspace-id or actorId / workspaceId)',
-      401,
-    );
-  }
-
-  const resolved = membership.resolveMembership(workspaceId, actorId);
-  if (resolved === undefined) {
-    throw new AuthorizationError(
-      'principal_not_found',
-      `actor ${actorId} is not a member of workspace ${workspaceId}`,
-      401,
-    );
-  }
-  return membershipToPrincipal(resolved);
-}

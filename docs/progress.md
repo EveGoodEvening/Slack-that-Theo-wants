@@ -41,7 +41,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
 | C6    | done         | Verified: npm install, test (192 tests), build, lint, typecheck |
 | C7    | done         | Verified: npm install, test (240 tests), build, lint, typecheck |
 | C8    | done         | Verified: npm install, targeted realtime/preview tests (36 tests), full test (248 tests), build, lint, typecheck after review fixes |
-| C9    | not started  | Depends on C1a, C2, C3, C4, C7 |
+| C9    | done         | Verified: npm install, targeted review-fix tests (104 tests), full test (267 tests), build, lint, typecheck after review fixes |
 | C10   | not started  | Depends on all core flows |
 
 ## C0 — Product/architecture baseline and scaffold
@@ -161,17 +161,17 @@ Rules (mirrored from `docs/implementation-plan.md`):
 
 ## C9 — Auth, workspace boundaries, collaboration base
 
-- [ ] Implement real sign-in, replacing the C1a stubbed principal resolution with authenticated principals
-- [ ] Extend the C1a baseline membership model with the full membership lifecycle and invite/share model
-- [ ] Implement channel/group-level feed boundaries
-- [ ] Implement invite/share model
-- [ ] Replace the C1a stubbed auth in the shared authorization middleware with sign-in-backed principals; retain per-endpoint read/write scope checks across all C2/C3 endpoints
-- [ ] Ensure agent credentials inherit correct workspace/group scope
-- [ ] Add migrations/constraints/backfills for auth, membership, invite/share, and agent-credential-scoping tables; preserve earlier workspace/group/post/comment data
-- [ ] Verify migrations apply on a fresh database, migrate from the pre-C9 state, and roll back cleanly; seed any default membership required to keep existing data accessible
-- [ ] Add tests proving users cannot read/write outside their workspace/group
-- [ ] Add tests proving agent credentials inherit correct scope
-- [ ] Add tests proving C9 migrations apply cleanly, migrate from pre-C9 state without data loss, and roll back cleanly; seeded/default membership preserves access to pre-C9 data
+- [x] Implement real sign-in, replacing the C1a stubbed principal resolution with authenticated principals — local auth/session primitives in `src/security/auth.ts`, `/auth/signin` + `/auth/signout`, shared resolver now uses session cookie/Bearer session; verified by orchestrator
+- [x] Extend the C1a baseline membership model with the full membership lifecycle and invite/share model — `workspace_member` lifecycle status plus invite/share repositories and tables; active members are not downgraded by invite, revoked invites cannot be accepted, and share revocation preserves accepted-invite access; verified by orchestrator
+- [x] Implement channel/group-level feed boundaries — workspace/group-scoped sessions and C2/C3/C4/C5/C8 service checks retain per-resource read/write boundaries; verified by orchestrator
+- [x] Implement invite/share model — `workspace_invite`, `workspace_share`, invite acceptance/revocation, share grant/revoke implemented in `MembershipRepository`; verified by orchestrator
+- [x] Replace the C1a stubbed auth in the shared authorization middleware with sign-in-backed principals; retain per-endpoint read/write scope checks across all C2/C3 endpoints — `authMiddleware`/`requireRole` now resolve C9 sessions while services still call `assertCanRead`/`assertCanWrite`; verified by orchestrator
+- [x] Ensure agent credentials inherit correct workspace/group scope — credential issuance validates active agent membership, shared workspace grants flow through `workspace_share`, and agent principal resolution inherits the credential workspace membership; verified by orchestrator
+- [x] Add migrations/constraints/backfills for auth, membership, invite/share, and agent-credential-scoping tables; preserve earlier workspace/group/post/comment data — migration 0004 adds auth/invite/share tables, backfills membership, relaxes author-home FKs for shared authorship, and rebuilds agent control-plane tables; verified by orchestrator
+- [x] Verify migrations apply on a fresh database, migrate from the pre-C9 state, and roll back cleanly; seed any default membership required to keep existing data accessible — targeted tests added and verified by orchestrator
+- [x] Add tests proving users cannot read/write outside their workspace/group — session-backed middleware, post route, comment route, feed UI, and shared-membership boundary tests updated; verified by orchestrator
+- [x] Add tests proving agent credentials inherit correct scope — shared-workspace credential issuance/write/feed test added in `src/api/agentRoutes.test.ts`; verified by orchestrator
+- [x] Add tests proving C9 migrations apply cleanly, migrate from pre-C9 state without data loss, and roll back cleanly; seeded/default membership preserves access to pre-C9 data — C9 migration tests added in `src/security/security.test.ts`; verified by orchestrator
 
 ## C10 — Hardening and review pass
 
@@ -409,3 +409,24 @@ Rules (mirrored from `docs/implementation-plan.md`):
   src/api/activityRoutes.test.ts src/ui/feed.test.ts src/ui/postDetail.test.ts
   src/ui/codeBlockUi.test.ts`, 36 tests), full `npm test` (248 tests),
   `npm run build`, `npm run lint`, and `npm run typecheck`. C8 is `done`.
+- 2026-06-28 — Chunk C9: not started -> in progress — Completed implementation
+  pass in `/root/gitfiles/Slack-that-Theo-wants-C9`: local sign-in/session
+  auth, session-backed shared middleware, membership invite/share lifecycle
+  hardening, workspace/group feed boundaries, shared-author migration/backfill/
+  rollback, agent credential workspace-scope inheritance, and targeted C9
+  coverage. Orchestrator verified targeted C9 tests (`npm test --
+  src/security/security.test.ts src/api/postRoutes.test.ts
+  src/api/commentRoutes.test.ts src/api/agentRoutes.test.ts src/ui/feed.test.ts
+  src/ui/postDetail.test.ts src/api/activityRoutes.test.ts`, 172 tests), full
+  `npm test` (262 tests), `npm run build`, `npm run lint`, and
+  `npm run typecheck`. C9 is `done`.
+- 2026-06-28 — Chunk C9: review blockers fixed in
+  `/root/gitfiles/Slack-that-Theo-wants-C9` without running commands per
+  instruction. Revalidated SSE stream membership before event delivery,
+  restored strongest accepted invite role on share revocation, scoped agent
+  idempotency keys by workspace, scoped `/agents/audit` reads to the credential
+  workspace, and added targeted blocker coverage. Orchestrator verified targeted
+  review-fix tests (`npm test -- src/api/activityRoutes.test.ts
+  src/security/security.test.ts src/api/agentRoutes.test.ts`, 104 tests), full
+  `npm test` (267 tests), `npm run build`, `npm run lint`, and
+  `npm run typecheck` after review fixes. C9 is `done`.

@@ -62,3 +62,4 @@ export {
   type ReplyCreatedActivityEvent,
 } from './activityEvents.js';
 export { activityRoutes, type ActivityRouteDeps } from './activityRoutes.js';
+export { authRoutes, type AuthRouteDeps } from './authRoutes.js';

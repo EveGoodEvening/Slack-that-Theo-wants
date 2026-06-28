@@ -11,7 +11,7 @@ import {
 import { DomainRepository } from '../domain/index.js';
 import { bumpPostLastActivity } from '../domain/repositories.js';
 import { MembershipRepository } from '../security/membership.js';
-import { PRINCIPAL_HEADERS } from '../security/principal.js';
+import { AuthRepository, sessionCookie } from '../security/auth.js';
 import { createApp, type AppDeps } from '../index.js';
 import { ACTIVITY_EVENT_TYPES } from '../api/activityEvents.js';
 
@@ -31,6 +31,7 @@ import { ACTIVITY_EVENT_TYPES } from '../api/activityEvents.js';
 let db: BetterSqliteDatabase;
 let domain: DomainRepository;
 let membership: MembershipRepository;
+let auth: AuthRepository;
 
 beforeAll(() => {
   db = openDatabase(':memory:');
@@ -49,18 +50,17 @@ beforeEach(() => {
   migrateUp(db, migrations);
   domain = new DomainRepository(db);
   membership = new MembershipRepository(db);
+  auth = new AuthRepository(db);
 });
 
 function app(): Hono {
-  const deps: AppDeps = { repository: domain, membership };
+  const deps: AppDeps = { repository: domain, membership, auth };
   return createApp(deps);
 }
 
 function headersFor(actorId: string, workspaceId: string): Record<string, string> {
-  return {
-    [PRINCIPAL_HEADERS.actorId]: actorId,
-    [PRINCIPAL_HEADERS.workspaceId]: workspaceId,
-  };
+  const session = auth.createSession({ actorId, workspaceId });
+  return { cookie: sessionCookie(session.secret) };
 }
 
 /** Two-workspace fixture: wsA and wsB, each with one human writer. */
@@ -104,7 +104,7 @@ async function getFeed(
   return { status: res.status, html: await res.text() };
 }
 
-/** Submit the create-post form with browser hidden principal fields. */
+/** Submit the create-post form with the sign-in session cookie. */
 async function createPostViaForm(
   appInstance: Hono,
   actorId: string,
@@ -113,11 +113,9 @@ async function createPostViaForm(
 ): Promise<{ status: number; html: string }> {
   const form = new URLSearchParams();
   form.set('content', content);
-  form.set('actorId', actorId);
-  form.set('workspaceId', workspaceId);
   const res = await appInstance.request('/feed', {
     method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    headers: { ...headersFor(actorId, workspaceId), 'content-type': 'application/x-www-form-urlencoded' },
     body: form.toString(),
   });
   return { status: res.status, html: await res.text() };
@@ -280,21 +278,17 @@ describe('C4 unsafe HTML/script is escaped/sanitized', () => {
   it('escapes unsafe HTML in the create-post form error surface', async () => {
     const { humanA, wsA } = twoWorkspaceFixture();
     const a = app();
-    // Submit empty content plus an invalid actor credential to trigger the
-    // authorization error document. The actor value contains markup so the
-    // test proves the form principal path validates through membership and
-    // escapes rejected credential text in the UI error surface.
+    // Submit empty content with a valid session so the route re-renders the
+    // form error surface. The unsafe content is user-authored and must not be
+    // emitted as raw HTML.
     const form = new URLSearchParams();
-    form.set('content', '');
-    form.set('actorId', `${humanA.id}\"><script>alert(1)</script>`);
-    form.set('workspaceId', wsA.id);
-    const res = await a.request('/feed', {
+    form.set('content', '<script>alert(1)</script>');
+    const res = await a.request('/feed/preview', {
       method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      headers: { ...headersFor(humanA.id, wsA.id), 'content-type': 'application/x-www-form-urlencoded' },
       body: form.toString(),
     });
-    expect(res.status).toBe(401);
-    // The injected script in the actor field must be escaped in the error page.
+    expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).not.toContain('<script>alert(1)</script>');
     expect(html).toContain('&lt;script&gt;');
@@ -571,7 +565,7 @@ describe('C8 feed realtime progressive enhancement', () => {
     expect(before.html.indexOf('data-post-id="new"')).toBeLessThan(
       before.html.indexOf('data-post-id="old"'),
     );
-    expect(before.html).toContain('/events?actorId=humanA&workspaceId=wsA');
+    expect(before.html).toContain('new EventSource("/events")');
     expect(before.html).toContain(ACTIVITY_EVENT_TYPES.postCreated);
     expect(before.html).toContain(ACTIVITY_EVENT_TYPES.commentCreated);
     expect(before.html).toContain(ACTIVITY_EVENT_TYPES.replyCreated);
@@ -582,13 +576,13 @@ describe('C8 feed realtime progressive enhancement', () => {
       { postId: 'old', lastActivityAt: '2024-01-01T00:00:00.000Z' },
     ]);
     const fetches = installFeedRealtimeGlobals(document, async (url) => {
-      const res = await a.request(url);
+      const res = await a.request(url, { headers: headersFor(humanA.id, wsA.id) });
       return { ok: res.status === 200, text: () => res.text() };
     });
 
     Function(script)();
     const source = currentFeedEventSource();
-    expect(source.url).toBe('/events?actorId=humanA&workspaceId=wsA');
+    expect(source.url).toBe('/events');
     expect(source.listeners.has(ACTIVITY_EVENT_TYPES.commentCreated)).toBe(true);
     expect(source.listeners.has(ACTIVITY_EVENT_TYPES.postCreated)).toBe(true);
     expect(source.listeners.has(ACTIVITY_EVENT_TYPES.replyCreated)).toBe(true);
@@ -603,7 +597,7 @@ describe('C8 feed realtime progressive enhancement', () => {
     source.emit(ACTIVITY_EVENT_TYPES.commentCreated, { rootPostId: 'old' });
     await flushPromises();
 
-    expect(fetches).toEqual(['/feed/fragments/posts/old?actorId=humanA&workspaceId=wsA']);
+    expect(fetches).toEqual(['/feed/fragments/posts/old']);
     expect(document.postOrder()).toEqual(['old', 'new']);
     const oldAfter = document.postCard('old');
     expect(oldAfter).not.toBe(oldBefore);
@@ -626,8 +620,8 @@ describe('C8 feed realtime progressive enhancement', () => {
     );
 
     const script = extractFeedRealtimeScript(before.html);
-    const olderUrl = '/feed/fragments/posts/older?actorId=humanA&workspaceId=wsA';
-    const newerUrl = '/feed/fragments/posts/newer?actorId=humanA&workspaceId=wsA';
+    const olderUrl = '/feed/fragments/posts/older';
+    const newerUrl = '/feed/fragments/posts/newer';
     const olderFetch = deferred<FeedFetchResponse>();
     const newerFetch = deferred<FeedFetchResponse>();
     const document = new FeedRealtimeDocument([
@@ -640,7 +634,7 @@ describe('C8 feed realtime progressive enhancement', () => {
       throw new Error(`unexpected feed fragment fetch ${url}`);
     });
     const fragmentResponse = async (postId: string): Promise<FeedFetchResponse> => {
-      const res = await a.request(`/feed/fragments/posts/${postId}?actorId=humanA&workspaceId=wsA`);
+      const res = await a.request(`/feed/fragments/posts/${postId}`, { headers: headersFor(humanA.id, wsA.id) });
       return { ok: res.status === 200, text: () => res.text() };
     };
 

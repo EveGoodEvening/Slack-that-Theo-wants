@@ -1,16 +1,13 @@
 import type { ActorKind } from '../domain/types.js';
 
 /**
- * C1a security baseline: principal, membership, authorization.
+ * Shared security types: principal, membership, authorization.
  *
- * This module owns the request→principal resolution (stubbed auth, replaced by
- * C9 real sign-in), the baseline workspace/group membership model, and the
- * shared authorization middleware + reusable scope/filter helpers consumed by
- * every later exposed API, realtime, and agent surface (C2/C3/C7/C8).
- *
- * Real sign-in, invite/share, and the full membership lifecycle are deferred to
- * C9. The shared middleware and per-endpoint read/write scope checks persist
- * across that replacement.
+ * C1a introduced the Principal shape and workspace/group authorization helpers;
+ * C9 replaces the old header-only resolver with sign-in sessions while keeping
+ * this shape as the common contract for human app/API routes and agent
+ * credentials. The shared middleware and per-endpoint read/write scope checks
+ * consume these types across C2/C3/C7/C8.
  */
 
 /** Authorization role. 'write' implies 'read'. */
@@ -20,9 +17,9 @@ export type Role = 'read' | 'write';
  * A resolved principal: the actor making a request, the workspace/group it acts
  * in, its kind (human | agent), and its membership role within that workspace.
  *
- * `resolvePrincipal` is the single stubbed entry point that produces a
- * Principal from a request. C9 swaps the stub for real sign-in; the Principal
- * shape and the middleware that consume it stay the same.
+ * Human app/API principals come from C9 auth sessions; agent principals come
+ * from scoped agent credentials. Both paths validate an active membership
+ * before producing this shape.
  */
 export interface Principal {
   actorId: string;

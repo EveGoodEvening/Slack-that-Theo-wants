@@ -1,6 +1,7 @@
 import { CODE_BLOCK_CSS, COPY_CODE_SCRIPT, PREVIEW_SCRIPT } from './codeBlockUi.js';
 import { Hono } from 'hono';
 import type { MembershipRepository } from '../security/membership.js';
+import type { AuthRepository } from '../security/auth.js';
 import { AuthorizationError, type Principal } from '../security/types.js';
 import {
   renderContent,
@@ -10,12 +11,8 @@ import {
 import { ACTIVITY_EVENT_TYPES } from '../api/activityEvents.js';
 import { PostNotFoundError, type PostDTO, type PostService } from '../api/postService.js';
 import {
-  ACTOR_FIELD,
-  ACTOR_HEADER_FIELD,
   escapeText,
   resolveUiPrincipal,
-  WORKSPACE_FIELD,
-  WORKSPACE_HEADER_FIELD,
 } from './shared.js';
 
 /**
@@ -30,13 +27,10 @@ import {
  * detail view at `/feed/:postId` where the conversation (comments + nested
  * replies) lives.
  *
- * Principal resolution reuses the C1a membership-validation core via the shared
- * `resolveUiPrincipal` helper (see `./shared.ts`). The UI reads the stubbed
- * `x-actor-id` / `x-workspace-id` credentials from request headers first (so
- * API-style clients work), then browser `actorId` / `workspaceId` query
- * parameters on GET and form fields on POST. The pair is always validated
- * against the membership table via `membership.resolveMembership`; C9 swaps the
- * extraction, not the validation.
+ * Principal resolution uses the C9 local sign-in session via the shared
+ * `resolveUiPrincipal` helper (see `./shared.ts`). Browser forms do not carry
+ * actor/workspace ids; the HttpOnly session cookie selects the current
+ * workspace/group and the service layer performs the per-resource checks.
  *
  * States:
  * - empty: the feed has no posts for the principal's workspace.
@@ -47,21 +41,19 @@ import {
 
 export interface FeedRouteDeps {
   membership: MembershipRepository;
-  /** Optional service override; defaults to the C2 PostServiceImpl. */
+  auth: AuthRepository;
   service: PostService;
 }
 
 /** Render a single post card. Body content goes through C3a renderPostContent. */
-function renderPostCard(post: PostDTO, principal: Principal): string {
+function renderPostCard(post: PostDTO): string {
   // The feed endpoint only returns live posts (tombstones are excluded by the
   // C2 service), so we always have content here. We still route through
   // renderPostContent so a tombstone input would render safely if the contract
   // ever changes.
   const renderable: RenderableContent = { content: post.content };
   const rendered = renderPostContent(renderable);
-  const conversationHref = `/feed/${encodeURIComponent(post.id)}?${ACTOR_FIELD}=${encodeURIComponent(
-    principal.actorId,
-  )}&${WORKSPACE_FIELD}=${encodeURIComponent(principal.workspaceId)}`;
+  const conversationHref = `/feed/${encodeURIComponent(post.id)}`;
   return `    <article class="post-card" data-post-id="${escapeText(post.id)}" data-last-activity-at="${escapeText(post.lastActivityAt)}">
       <header class="post-meta">
         <span class="post-author">${escapeText(post.authorActorId)}</span>
@@ -72,13 +64,9 @@ function renderPostCard(post: PostDTO, principal: Principal): string {
     </article>`;
 }
 
-function principalQuery(principal: Principal): string {
-  return `${ACTOR_FIELD}=${encodeURIComponent(principal.actorId)}&${WORKSPACE_FIELD}=${encodeURIComponent(principal.workspaceId)}`;
-}
 
-function renderFeedRealtimeScript(principal: Principal): string {
-  const eventUrl = `/events?${principalQuery(principal)}`;
-  const fragmentQuery = `?${principalQuery(principal)}`;
+function renderFeedRealtimeScript(): string {
+  const eventUrl = '/events';
   const eventTypes = JSON.stringify([
     ACTIVITY_EVENT_TYPES.postCreated,
     ACTIVITY_EVENT_TYPES.commentCreated,
@@ -148,7 +136,7 @@ function renderFeedRealtimeScript(principal: Principal): string {
         try { payload = JSON.parse(message.data); } catch (_) { return; }
         var postId = rootPostId(payload);
         if (!postId) return;
-        fetch(${JSON.stringify('/feed/fragments/posts/')} + encodeURIComponent(postId) + ${JSON.stringify(fragmentQuery)}, { headers: { Accept: 'text/html' } })
+        fetch(${JSON.stringify('/feed/fragments/posts/')} + encodeURIComponent(postId), { headers: { Accept: 'text/html' } })
           .then(function (response) {
             if (!response.ok) throw new Error('post fragment fetch failed');
             return response.text();
@@ -190,7 +178,7 @@ function renderFeedDocument(
   principal: Principal,
   opts: { error?: string | undefined; notice?: string | undefined } = {},
 ): string {
-  const cards = posts.map((post) => renderPostCard(post, principal)).join('\n');
+  const cards = posts.map((post) => renderPostCard(post)).join('\n');
   const body =
     posts.length === 0
       ? '    <p class="feed-empty">No posts yet. Create the first one above.</p>'
@@ -203,9 +191,8 @@ function renderFeedDocument(
     ? `    <p class="feed-notice" role="status">${escapeText(opts.notice)}</p>`
     : '';
 
-  // The create-post form posts the content + browser principal fields as hidden
-  // inputs so a browser without custom-header support still resolves the same
-  // C1a principal. The form is the C2 create endpoint surface.
+  // The create-post form posts only the untrusted content; the C9 session
+  // cookie supplies the current actor/workspace.
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -241,8 +228,6 @@ ${noticeBlock}
   <form class="create-post" method="post" action="/feed" id="create-post-form">
     <label for="content">Create a post</label>
     <textarea id="content" name="content" required maxlength="4000" placeholder="Write something…"></textarea>
-    <input type="hidden" name="${ACTOR_FIELD}" value="${escapeText(principal.actorId)}" />
-    <input type="hidden" name="${WORKSPACE_FIELD}" value="${escapeText(principal.workspaceId)}" />
     <button type="submit">Post</button>
     <button type="button" class="preview-toggle" data-preview-for="content" aria-pressed="false">Preview</button>
     <div class="composer-preview" data-preview-for="content"></div>
@@ -265,7 +250,7 @@ ${body}
         if (feed) feed.setAttribute('aria-busy', 'true');
       });
     })();
-${renderFeedRealtimeScript(principal)}
+${renderFeedRealtimeScript()}
 ${COPY_CODE_SCRIPT}
 ${PREVIEW_SCRIPT}
   </script>
@@ -289,20 +274,20 @@ function renderErrorDocument(message: string, code: string): string {
 <body>
   <header class="page-header"><h1>Feed</h1></header>
   <p class="feed-error" role="alert">${escapeText(message)} (code: ${escapeText(code)})</p>
-  <p>Provide <code>${ACTOR_HEADER_FIELD}</code> / <code>${WORKSPACE_HEADER_FIELD}</code> headers or <code>${ACTOR_FIELD}</code> / <code>${WORKSPACE_FIELD}</code> browser fields.</p>
+  <p><a href="/auth/signin">Sign in</a> to choose a workspace/group.</p>
 </body>
 </html>`;
 }
 
 export function feedRoutes(deps: FeedRouteDeps): Hono {
   const route = new Hono();
-  const { membership, service } = deps;
+  const { auth, membership, service } = deps;
 
   // GET /feed — landing/feed view consuming the C2 list-feed service.
   route.get('/', (c) => {
     let principal: Principal;
     try {
-      principal = resolveUiPrincipal(c.req, {}, membership);
+      principal = resolveUiPrincipal(c.req, membership, auth);
     } catch (err) {
       if (err instanceof AuthorizationError) {
         return c.html(
@@ -336,12 +321,12 @@ export function feedRoutes(deps: FeedRouteDeps): Hono {
   route.get('/fragments/posts/:postId', (c) => {
     let principal: Principal;
     try {
-      principal = resolveUiPrincipal(c.req, {}, membership);
+      principal = resolveUiPrincipal(c.req, membership, auth);
       const read = service.readPost({
         principal,
         postId: c.req.param('postId'),
       });
-      return c.html(renderPostCard(read.post, principal));
+      return c.html(renderPostCard(read.post));
     } catch (err) {
       if (err instanceof AuthorizationError) {
         return c.text(`${err.code}: ${err.message}`, err.status as 401 | 403);
@@ -355,31 +340,14 @@ export function feedRoutes(deps: FeedRouteDeps): Hono {
 
   // POST /feed — create-post form calling the C2 create endpoint service.
   route.post('/', async (c) => {
-    // Read form fields first. The principal credentials arrive as browser hidden
-    // inputs so a browser without custom-header support still resolves the same
-    // C1a principal; header-based clients are also honored.
+    // The principal is resolved from the sign-in session cookie.
     const form = await c.req.formData().catch(() => null);
     const content = form?.get('content');
-    const actorField = form?.get(ACTOR_FIELD);
-    const workspaceField = form?.get(WORKSPACE_FIELD);
-    const actorHeaderField = form?.get(ACTOR_HEADER_FIELD);
-    const workspaceHeaderField = form?.get(WORKSPACE_HEADER_FIELD);
 
-    const bodyParams: Record<string, string | undefined> = {
-      [ACTOR_FIELD]: typeof actorField === 'string' ? actorField : undefined,
-      [WORKSPACE_FIELD]:
-        typeof workspaceField === 'string' ? workspaceField : undefined,
-      [ACTOR_HEADER_FIELD]:
-        typeof actorHeaderField === 'string' ? actorHeaderField : undefined,
-      [WORKSPACE_HEADER_FIELD]:
-        typeof workspaceHeaderField === 'string'
-          ? workspaceHeaderField
-          : undefined,
-    };
 
     let principal: Principal;
     try {
-      principal = resolveUiPrincipal(c.req, bodyParams, membership);
+      principal = resolveUiPrincipal(c.req, membership, auth);
     } catch (err) {
       if (err instanceof AuthorizationError) {
         return c.html(
@@ -457,25 +425,10 @@ export function feedRoutes(deps: FeedRouteDeps): Hono {
   route.post('/preview', async (c) => {
     const form = await c.req.formData().catch(() => null);
     const content = form?.get('content');
-    const actorField = form?.get(ACTOR_FIELD);
-    const workspaceField = form?.get(WORKSPACE_FIELD);
-    const actorHeaderField = form?.get(ACTOR_HEADER_FIELD);
-    const workspaceHeaderField = form?.get(WORKSPACE_HEADER_FIELD);
-    const bodyParams: Record<string, string | undefined> = {
-      [ACTOR_FIELD]: typeof actorField === 'string' ? actorField : undefined,
-      [WORKSPACE_FIELD]:
-        typeof workspaceField === 'string' ? workspaceField : undefined,
-      [ACTOR_HEADER_FIELD]:
-        typeof actorHeaderField === 'string' ? actorHeaderField : undefined,
-      [WORKSPACE_HEADER_FIELD]:
-        typeof workspaceHeaderField === 'string'
-          ? workspaceHeaderField
-          : undefined,
-    };
-    // Resolve the same C1a principal as a live submit; the value is only
+    // Resolve the same C9 principal as a live submit; the value is only
     // needed for the authorization gate (preview touches no stored data).
     try {
-      resolveUiPrincipal(c.req, bodyParams, membership);
+      resolveUiPrincipal(c.req, membership, auth);
     } catch (err) {
       if (err instanceof AuthorizationError) {
         return c.html(

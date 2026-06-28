@@ -107,12 +107,6 @@ class FakeElement {
     if (selector === '.preview-toggle[data-preview-for]') {
       return this.hasClass('preview-toggle') && this.getAttribute('data-preview-for') !== null;
     }
-    if (selector === 'input[name="actorId"]') {
-      return this.tagName === 'input' && this.getAttribute('name') === 'actorId';
-    }
-    if (selector === 'input[name="workspaceId"]') {
-      return this.tagName === 'input' && this.getAttribute('name') === 'workspaceId';
-    }
     return false;
   }
 
@@ -127,8 +121,6 @@ class FakeDocument {
   fetchBodies: string[] = [];
   readonly form = new FakeElement('form');
   readonly textarea = new FakeElement('textarea', { id: 'content' });
-  readonly actor = new FakeElement('input', { name: 'actorId' });
-  readonly workspace = new FakeElement('input', { name: 'workspaceId' });
   readonly toggle = new FakeElement('button', {
     class: 'preview-toggle',
     'data-preview-for': 'content',
@@ -140,11 +132,7 @@ class FakeDocument {
 
   constructor() {
     this.textarea.value = '```ts\nconst x = 1;\n```';
-    this.actor.value = 'ada';
-    this.workspace.value = 'wsA';
     this.form.appendChild(this.textarea);
-    this.form.appendChild(this.actor);
-    this.form.appendChild(this.workspace);
     this.form.appendChild(this.toggle);
     this.form.appendChild(this.pane);
   }
@@ -266,7 +254,7 @@ describe('C6 codeBlockUi browser scripts', () => {
     await flushPromises();
 
     expect(document.fetchBodies).toEqual([
-      'content=%60%60%60ts%0Aconst+x+%3D+1%3B%0A%60%60%60&actorId=ada&workspaceId=wsA',
+      'content=%60%60%60ts%0Aconst+x+%3D+1%3B%0A%60%60%60',
     ]);
     expect(copied).toEqual(['const x = 1;']);
   });

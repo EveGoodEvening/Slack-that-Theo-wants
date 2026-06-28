@@ -10,7 +10,7 @@ import {
 } from '../db/index.js';
 import { DomainRepository } from '../domain/index.js';
 import { MembershipRepository } from '../security/membership.js';
-import { PRINCIPAL_HEADERS } from '../security/principal.js';
+import { AuthRepository, sessionCookie } from '../security/auth.js';
 import { createApp, type AppDeps } from '../index.js';
 import { ACTIVITY_EVENT_TYPES } from '../api/activityEvents.js';
 import { PREVIEW_SCRIPT } from './codeBlockUi.js';
@@ -27,6 +27,7 @@ import { PREVIEW_SCRIPT } from './codeBlockUi.js';
 let db: BetterSqliteDatabase;
 let domain: DomainRepository;
 let membership: MembershipRepository;
+let auth: AuthRepository;
 
 beforeAll(() => {
   db = openDatabase(':memory:');
@@ -45,18 +46,17 @@ beforeEach(() => {
   migrateUp(db, migrations);
   domain = new DomainRepository(db);
   membership = new MembershipRepository(db);
+  auth = new AuthRepository(db);
 });
 
 function app(): Hono {
-  const deps: AppDeps = { repository: domain, membership };
+  const deps: AppDeps = { repository: domain, membership, auth };
   return createApp(deps);
 }
 
 function headersFor(actorId: string, workspaceId: string): Record<string, string> {
-  return {
-    [PRINCIPAL_HEADERS.actorId]: actorId,
-    [PRINCIPAL_HEADERS.workspaceId]: workspaceId,
-  };
+  const session = auth.createSession({ actorId, workspaceId });
+  return { cookie: sessionCookie(session.secret) };
 }
 
 function workspaceFixture() {
@@ -165,11 +165,9 @@ async function postCommentForm(
 ): Promise<{ status: number; html: string }> {
   const form = new URLSearchParams();
   form.set('content', content);
-  form.set('actorId', actorId);
-  form.set('workspaceId', workspaceId);
   const res = await appInstance.request(`/feed/${postId}/comments`, {
     method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    headers: { ...headersFor(actorId, workspaceId), 'content-type': 'application/x-www-form-urlencoded' },
     body: form.toString(),
   });
   return { status: res.status, html: await res.text() };
@@ -185,13 +183,11 @@ async function postReplyForm(
 ): Promise<{ status: number; html: string }> {
   const form = new URLSearchParams();
   form.set('content', content);
-  form.set('actorId', actorId);
-  form.set('workspaceId', workspaceId);
   const res = await appInstance.request(
     `/feed/${postId}/comments/${parentId}/replies`,
     {
       method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      headers: { ...headersFor(actorId, workspaceId), 'content-type': 'application/x-www-form-urlencoded' },
       body: form.toString(),
     },
   );
@@ -1093,20 +1089,20 @@ describe('C8 post detail realtime progressive enhancement', () => {
 
     const detail = await getPostDetail(a, 'post1', ada.id, workspace.id);
     expect(detail.status).toBe(200);
-    expect(detail.html).toContain('/events?actorId=ada&workspaceId=wsA');
+    expect(detail.html).toContain('new EventSource("/events")');
     expect(detail.html).toContain(ACTIVITY_EVENT_TYPES.commentCreated);
     expect(detail.html).toContain(ACTIVITY_EVENT_TYPES.replyCreated);
 
     const script = extractPostDetailRealtimeScript(detail.html);
     const document = new PostDetailRealtimeDocument();
     const fetches = installPostDetailRealtimeGlobals(document, async (url) => {
-      const res = await a.request(url);
+      const res = await a.request(url, { headers: headersFor(ada.id, workspace.id) });
       return { ok: res.status === 200, text: () => res.text() };
     });
 
     Function(script)();
     const source = currentPostDetailEventSource();
-    expect(source.url).toBe('/events?actorId=ada&workspaceId=wsA');
+    expect(source.url).toBe('/events');
     expect(source.listeners.has(ACTIVITY_EVENT_TYPES.commentCreated)).toBe(true);
     expect(source.listeners.has(ACTIVITY_EVENT_TYPES.replyCreated)).toBe(true);
     expect(source.listeners.has(ACTIVITY_EVENT_TYPES.postCreated)).toBe(false);
@@ -1129,7 +1125,7 @@ describe('C8 post detail realtime progressive enhancement', () => {
     source.emit(ACTIVITY_EVENT_TYPES.commentCreated, { rootPostId: 'post1' });
     await flushPromises();
 
-    const fragmentUrl = '/feed/post1/fragments/conversation?actorId=ada&workspaceId=wsA';
+    const fragmentUrl = '/feed/post1/fragments/conversation';
     expect(fetches).toEqual([fragmentUrl]);
     const afterComment = document.conversation();
     expect(afterComment).not.toBe(initialConversation);
@@ -1203,7 +1199,7 @@ describe('C8 post detail realtime progressive enhancement', () => {
     });
 
     const fetches = installPostDetailRealtimeGlobals(document, async (url) => {
-      const res = await a.request(url);
+      const res = await a.request(url, { headers: headersFor(ada.id, workspace.id) });
       return { ok: res.status === 200, text: () => res.text() };
     });
 
@@ -1224,7 +1220,7 @@ describe('C8 post detail realtime progressive enhancement', () => {
     });
     await flushPromises();
 
-    const fragmentUrl = '/feed/post1/fragments/conversation?actorId=ada&workspaceId=wsA';
+    const fragmentUrl = '/feed/post1/fragments/conversation';
     expect(fetches).toEqual([fragmentUrl]);
     expect(document.conversation().innerHTML).toContain('arrived while drafting');
 
@@ -1274,7 +1270,7 @@ describe('C8 post detail realtime progressive enhancement', () => {
         if (url === '/feed/preview') {
           return { ok: true, text: async () => '<p>rendered realtime preview</p>' };
         }
-        const res = await a.request(url);
+        const res = await a.request(url, { headers: headersFor(ada.id, workspace.id) });
         return { ok: res.status === 200, text: () => res.text() };
       },
       fetchInits,
@@ -1298,7 +1294,7 @@ describe('C8 post detail realtime progressive enhancement', () => {
     });
     await flushPromises();
 
-    const fragmentUrl = '/feed/post1/fragments/conversation?actorId=ada&workspaceId=wsA';
+    const fragmentUrl = '/feed/post1/fragments/conversation';
     expect(fetches).toEqual([fragmentUrl]);
     const freshTextareaId = 'reply-comment-new-preview-parent';
     const freshTextarea = requirePostDetailRealtimeElement(document, freshTextareaId);
@@ -1324,7 +1320,7 @@ describe('C8 post detail realtime progressive enhancement', () => {
     expect(fetchInits[1]).toEqual({
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: 'content=preview+from+fresh+composer&actorId=ada&workspaceId=wsA',
+      body: 'content=preview+from+fresh+composer',
     });
     expect(freshPane.innerHTML).toBe(
       '<span class="preview-label">Preview</span><p>rendered realtime preview</p>',
@@ -1358,7 +1354,7 @@ describe('C8 post detail realtime progressive enhancement', () => {
 
     Function(script)();
     const source = currentPostDetailEventSource();
-    const fragmentUrl = '/feed/post1/fragments/conversation?actorId=ada&workspaceId=wsA';
+    const fragmentUrl = '/feed/post1/fragments/conversation';
     const olderActivityAt = '2024-01-02T00:00:00.000Z';
     const newerActivityAt = '2024-01-03T00:00:00.000Z';
 
