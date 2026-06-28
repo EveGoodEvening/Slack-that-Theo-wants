@@ -42,7 +42,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
 | C7    | done         | Verified: npm install, test (240 tests), build, lint, typecheck |
 | C8    | done         | Verified: npm install, targeted realtime/preview tests (36 tests), full test (248 tests), build, lint, typecheck after review fixes |
 | C9    | done         | Verified: npm install, targeted review-fix tests (104 tests), full test (267 tests), build, lint, typecheck after review fixes |
-| C10   | not started  | Depends on all core flows |
+| C10   | done         | Verified: npm install, targeted C10 tests (120 tests), full test (280 tests), build, lint, typecheck |
 
 ## C0 — Product/architecture baseline and scaffold
 
@@ -175,13 +175,13 @@ Rules (mirrored from `docs/implementation-plan.md`):
 
 ## C10 — Hardening and review pass
 
-- [ ] Accessibility pass on feed and post-detail views
-- [ ] Error-state completeness (network failures, permission denied, not found)
-- [ ] Database indexes for feed query and comment-tree query
-- [ ] Performance check/benchmark for deep nesting and feed pagination
-- [ ] Local-dev documentation (install, run, test)
-- [ ] API usage documentation for human and agent consumers
-- [ ] Targeted tests for deep-nesting rendering and feed pagination performance
+- [x] Accessibility pass on feed and post-detail views — implemented semantic landmarks, labels/descriptions, skip links, article/comment names, and live alert/status regions; verified by orchestrator
+- [x] Error-state completeness (network failures, permission denied, not found) — implemented accessible UI error documents, in-place write-denial surfaces, validation/not-found fallback handling, and realtime network-status announcements; verified by orchestrator
+- [x] Database indexes for feed query and comment-tree query — migration 0005 adds live feed, live comment-count, and first-level comment-tree indexes while preserving existing recursive child lookup index; verified by orchestrator
+- [x] Performance check/benchmark for deep nesting and feed pagination — targeted Vitest benchmark checks added with 500-post pagination, 250-level detail rendering, and query-plan assertions; verified by orchestrator
+- [x] Local-dev documentation (install, run, test) — README documents install/run/test commands, DB path, host binding, health check, and local data-seeding caveat; verified by orchestrator
+- [x] API usage documentation for human and agent consumers — README documents browser, JSON session, SSE, and agent API usage/idempotency/credential surfaces; verified by orchestrator
+- [x] Targeted tests for deep-nesting rendering and feed pagination performance — C10 coverage added in `src/performance.test.ts`, `src/ui/feed.test.ts`, `src/ui/postDetail.test.ts`, and migration index assertions; verified by orchestrator
 
 ## Known blockers / deferred items
 
@@ -430,3 +430,17 @@ Rules (mirrored from `docs/implementation-plan.md`):
   src/security/security.test.ts src/api/agentRoutes.test.ts`, 104 tests), full
   `npm test` (267 tests), `npm run build`, `npm run lint`, and
   `npm run typecheck` after review fixes. C9 is `done`.
+- 2026-06-28 — Chunk C10: not started -> in progress — Implemented hardening
+  pass in `/root/gitfiles/Slack-that-Theo-wants-C10` without running commands per
+  assignment. Added feed/post-detail accessibility landmarks, labels,
+  descriptions, and live regions; completed UI error-state surfaces for missing
+  sessions, permission denial, not found, validation fallback, and realtime
+  fragment/network failures; registered migration 0005 hot-path indexes for live
+  feed pagination, live comment counts, and first-level comment roots; added
+  targeted C10 accessibility/error/performance/index tests; expanded README
+  local-dev and human/agent API docs; recorded C10 decisions in stack-decision.
+  Orchestrator verified targeted C10 tests (`npm test --
+  src/domain/repositories.test.ts src/security/security.test.ts
+  src/ui/feed.test.ts src/ui/postDetail.test.ts src/performance.test.ts`, 120
+  tests), full `npm test` (280 tests), `npm run build`, `npm run lint`, and
+  `npm run typecheck` after a deep-tree assertion fix. C10 is `done`.

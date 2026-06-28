@@ -93,7 +93,7 @@ function expectLiveComment(comment: ReturnType<DomainRepository['getComment']>) 
 describe('C1 migrations', () => {
   it('applies cleanly on a fresh database', () => {
     // Later chunks register additional migrations; a fresh DB applies the full chain.
-    expect(appliedMigrations(db)).toEqual([1, 2, 3, 4]);
+    expect(appliedMigrations(db)).toEqual([1, 2, 3, 4, 5]);
     // Core tables exist.
     const tables = db
       .prepare(
@@ -126,10 +126,37 @@ describe('C1 migrations', () => {
   it('is idempotent when re-applied after a rollback', () => {
     migrateDown(db, migrations, 1);
     migrateUp(db, migrations);
-    expect(appliedMigrations(db)).toEqual([1, 2, 3, 4]);
+    expect(appliedMigrations(db)).toEqual([1, 2, 3, 4, 5]);
     const repo = new DomainRepository(db);
     const { post } = fixture(repo);
     expect(post.id).toBe('post1');
+  });
+
+  it('registers and rolls back C10 hot-path indexes separately from earlier schema', () => {
+    const indexRows = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='index' ORDER BY name")
+      .all() as { name: string }[];
+    const indexNames = indexRows.map((row) => row.name);
+    expect(indexNames).toEqual(
+      expect.arrayContaining([
+        'idx_post_feed_live',
+        'idx_comment_live_root_count',
+        'idx_comment_first_level_by_post',
+      ]),
+    );
+
+    migrateDown(db, migrations, 5);
+    expect(appliedMigrations(db)).toEqual([1, 2, 3, 4]);
+    const rolledBackIndexRows = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='index' ORDER BY name")
+      .all() as { name: string }[];
+    const rolledBackIndexNames = rolledBackIndexRows.map((row) => row.name);
+    expect(rolledBackIndexNames).not.toContain('idx_post_feed_live');
+    expect(rolledBackIndexNames).not.toContain('idx_comment_live_root_count');
+    expect(rolledBackIndexNames).not.toContain('idx_comment_first_level_by_post');
+
+    migrateUp(db, migrations);
+    expect(appliedMigrations(db)).toEqual([1, 2, 3, 4, 5]);
   });
 });
 

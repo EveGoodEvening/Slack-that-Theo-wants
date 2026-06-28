@@ -800,7 +800,7 @@ describe('C9 local auth and collaboration membership', () => {
 
 describe('C9 auth/collaboration migration', () => {
   it('applies C9 auth/collaboration tables on a fresh database', () => {
-    expect(appliedMigrations(db)).toEqual([1, 2, 3, 4]);
+    expect(appliedMigrations(db)).toEqual([1, 2, 3, 4, 5]);
     const tables = db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
       .all() as { name: string }[];
@@ -850,7 +850,7 @@ describe('C9 auth/collaboration migration', () => {
     });
 
     migrateUp(db, migrations);
-    expect(appliedMigrations(db)).toEqual([1, 2, 3, 4]);
+    expect(appliedMigrations(db)).toEqual([1, 2, 3, 4, 5]);
 
     const post = new DomainRepository(db).getPost('prePost');
     const comment = new DomainRepository(db).getComment('preComment');
@@ -875,7 +875,7 @@ describe('C9 auth/collaboration migration', () => {
     expect(memberColumns.map((c) => c.name)).not.toContain('status');
 
     migrateUp(db, migrations);
-    expect(appliedMigrations(db)).toEqual([1, 2, 3, 4]);
+    expect(appliedMigrations(db)).toEqual([1, 2, 3, 4, 5]);
   });
 });
 
@@ -885,7 +885,7 @@ describe('C9 auth/collaboration migration', () => {
 
 describe('C1a membership migration', () => {
   it('applies migration 0002 alongside migration 0001 on a fresh database', () => {
-    expect(appliedMigrations(db)).toEqual([1, 2, 3, 4]);
+    expect(appliedMigrations(db)).toEqual([1, 2, 3, 4, 5]);
     const tables = db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
       .all() as { name: string }[];
