@@ -444,3 +444,14 @@ Rules (mirrored from `docs/implementation-plan.md`):
   src/ui/feed.test.ts src/ui/postDetail.test.ts src/performance.test.ts`, 120
   tests), full `npm test` (280 tests), `npm run build`, `npm run lint`, and
   `npm run typecheck` after a deep-tree assertion fix. C10 is `done`.
+- 2026-06-28 — Final split-review blockers fixed on master — Revalidated
+  signed-in SSE sessions before delivery, enforced write role for agent
+  credential lifecycle mutations, redacted workspace identifiers from
+  authorization failures, made migration 0004 rollback refuse only genuinely
+  v3-incompatible shared-authored/control-plane rows, restored the exact v3
+  idempotency-key primary key on rollback, and removed stale status prose from
+  README/implementation-plan. Orchestrator verified targeted final tests
+  (`npm test -- src/api/activityRoutes.test.ts src/api/agentRoutes.test.ts
+  src/security/security.test.ts src/domain/repositories.test.ts`, 138 tests),
+  full `npm test` (286 tests), `npm run build`, `npm run lint`, and
+  `npm run typecheck`. All chunks C0-C10 remain `done`.

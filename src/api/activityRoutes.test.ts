@@ -110,9 +110,14 @@ async function openActivityStream(
   actorId: string,
   workspaceId: string,
 ): Promise<ActivityStreamTestReader> {
-  const res = await appInstance.request('/events', {
-    headers: headersFor(actorId, workspaceId),
-  });
+  return openActivityStreamWithHeaders(appInstance, headersFor(actorId, workspaceId));
+}
+
+async function openActivityStreamWithHeaders(
+  appInstance: Hono,
+  headers: Record<string, string>,
+): Promise<ActivityStreamTestReader> {
+  const res = await appInstance.request('/events', { headers });
   expect(res.status).toBe(200);
   expect(res.headers.get('content-type')).toContain('text/event-stream');
   const reader = res.body?.getReader();
@@ -310,6 +315,24 @@ describe('C8 activity SSE contract', () => {
     try {
       expect(membership.removeMembership('wsA', 'humanA')).toBe(1);
       await createCommentViaApi(a, 'postA', 'humanA2', 'wsA', 'after removal');
+      await expect(stream.nextEventOrClosed()).resolves.toBeUndefined();
+    } finally {
+      await stream.cancel();
+    }
+  });
+
+  it('closes the stream before future events after the opening session is revoked', async () => {
+    twoWorkspaceFixture();
+    domain.createActor({ id: 'humanA2', workspaceId: 'wsA', kind: 'human', displayName: 'Ava' });
+    seedPost('postA', 'wsA', 'humanA2', 'A post', '2024-01-01T00:00:00.000Z');
+    const a = app();
+    const session = auth.createSession({ actorId: 'humanA', workspaceId: 'wsA' });
+    const stream = await openActivityStreamWithHeaders(a, {
+      cookie: sessionCookie(session.secret),
+    });
+    try {
+      expect(auth.revokeSession(session.secret)).toBe(1);
+      await createCommentViaApi(a, 'postA', 'humanA2', 'wsA', 'after signout');
       await expect(stream.nextEventOrClosed()).resolves.toBeUndefined();
     } finally {
       await stream.cancel();

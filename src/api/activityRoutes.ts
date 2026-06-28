@@ -5,7 +5,6 @@ import {
   assertCanRead,
   authorizationErrorResponse,
   AuthorizationError,
-  membershipToPrincipal,
   resolvePrincipal,
   type AuthVariables,
   type Principal,
@@ -73,16 +72,9 @@ export function activityRoutes(deps: ActivityRouteDeps): Hono<{
           };
           write(': c8-connected\n\n');
           unsubscribe = deps.events.subscribe(principal, (event) => {
-            const current = deps.membership.resolveMembership(
-              principal.workspaceId,
-              principal.actorId,
-            );
-            if (current === undefined) {
-              close();
-              return;
-            }
             try {
-              assertCanRead(membershipToPrincipal(current), event.workspaceId);
+              const currentPrincipal = resolvePrincipal(c.req, deps.membership, deps.auth);
+              assertCanRead(currentPrincipal, event.workspaceId);
             } catch (err) {
               if (err instanceof AuthorizationError) {
                 close();

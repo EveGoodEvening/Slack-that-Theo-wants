@@ -1,5 +1,5 @@
 import type { Hono } from 'hono';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase } from '../db/connection.js';
 import {
   appliedMigrations,
@@ -88,6 +88,69 @@ beforeEach(() => {
   idempotency = new AgentIdempotencyRepository(db);
   quota = new AgentQuotaRepository(db);
 });
+
+afterEach(() => {
+  removeRollbackIncompatibleRows();
+});
+
+function removeRollbackIncompatibleRows(): void {
+  if (!appliedMigrations(db).includes(4)) return;
+  db.exec(`
+    DELETE FROM comment_node
+    WHERE root_post_id IN (
+      SELECT p.id
+      FROM post p
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM actor a
+        WHERE a.id = p.author_actor_id
+          AND a.workspace_id = p.workspace_id
+      )
+    );
+    DELETE FROM comment_node
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM actor a
+      WHERE a.id = comment_node.author_actor_id
+        AND a.workspace_id = comment_node.workspace_id
+    );
+    DELETE FROM post
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM actor a
+      WHERE a.id = post.author_actor_id
+        AND a.workspace_id = post.workspace_id
+    );
+    DELETE FROM agent_quota_state
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM actor a
+      WHERE a.id = agent_quota_state.actor_id
+        AND a.workspace_id = agent_quota_state.workspace_id
+    );
+    DELETE FROM agent_idempotency_key
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM actor a
+      WHERE a.id = agent_idempotency_key.actor_id
+        AND a.workspace_id = agent_idempotency_key.workspace_id
+    );
+    DELETE FROM agent_audit_log
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM actor a
+      WHERE a.id = agent_audit_log.actor_id
+        AND a.workspace_id = agent_audit_log.workspace_id
+    );
+    DELETE FROM agent_credential
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM actor a
+      WHERE a.id = agent_credential.actor_id
+        AND a.workspace_id = agent_credential.workspace_id
+    );
+  `);
+}
 
 function app(): Hono {
   const deps: AppDeps = { repository: domain, membership, auth, db };
@@ -304,6 +367,53 @@ describe('C7 agent credential lifecycle', () => {
     expect(feed.status).toBe(200);
     const page = (await feed.json()) as { posts: { workspaceId: string }[] };
     expect(page.posts.every((post) => post.workspaceId === 'wsB')).toBe(true);
+  });
+
+  it('read-only agent membership cannot issue, rotate, or revoke credentials', async () => {
+    twoWorkspaceFixture();
+    const issued = credentials.issue({ actorId: 'agentA', workspaceId: 'wsA' });
+    membership.setMembership('wsA', 'agentA', 'read');
+    const a = app();
+
+    const issue = await a.request('/agents/credentials', {
+      method: 'POST',
+      headers: {
+        ...bearerToken(issued.secret),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ label: 'blocked-issue' }),
+    });
+    expect(issue.status).toBe(403);
+    expect(((await issue.json()) as { code: string }).code).toBe(
+      'write_forbidden',
+    );
+
+    const rotate = await a.request('/agents/credentials/rotate', {
+      method: 'POST',
+      headers: {
+        ...bearerToken(issued.secret),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ label: 'blocked-rotate' }),
+    });
+    expect(rotate.status).toBe(403);
+    expect(((await rotate.json()) as { code: string }).code).toBe(
+      'write_forbidden',
+    );
+
+    const revoke = await a.request('/agents/credentials/revoke', {
+      method: 'POST',
+      headers: bearerToken(issued.secret),
+    });
+    expect(revoke.status).toBe(403);
+    expect(((await revoke.json()) as { code: string }).code).toBe(
+      'write_forbidden',
+    );
+
+    expect(credentials.verify(issued.secret)?.actorId).toBe('agentA');
+    expect(
+      credentials.listForActor('agentA').filter((row) => row.status === 'active'),
+    ).toHaveLength(1);
   });
 });
 

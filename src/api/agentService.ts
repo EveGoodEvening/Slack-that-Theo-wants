@@ -2,6 +2,7 @@ import type { DomainRepository } from '../domain/repositories.js';
 import type { Actor, ActorKind } from '../domain/types.js';
 import {
   DEFAULT_AGENT_QUOTA,
+  assertCanWrite,
   IdempotencyKeyReuseError,
   requestDigest,
   type AgentAuditRepository,
@@ -332,6 +333,7 @@ export class AgentService {
     label?: string;
   }): { id: string; secret: string; actorId: string; workspaceId: string; label: string | null; createdAt: string } {
     assertAgent(input.principal);
+    assertCanWrite(input.principal, input.principal.workspaceId);
     const request: { actorId: string; workspaceId: string; label?: string } = {
       actorId: input.principal.actorId,
       workspaceId: input.principal.workspaceId,
@@ -346,6 +348,7 @@ export class AgentService {
     label?: string;
   }): { id: string; secret: string; actorId: string; workspaceId: string; label: string | null; createdAt: string } {
     assertAgent(input.principal);
+    assertCanWrite(input.principal, input.principal.workspaceId);
     const request: { actorId: string; workspaceId: string; label?: string } = {
       actorId: input.principal.actorId,
       workspaceId: input.principal.workspaceId,
@@ -357,6 +360,7 @@ export class AgentService {
   /** Revoke all active credentials for the agent in the current workspace. */
   revokeCredentials(input: { principal: Principal }): number {
     assertAgent(input.principal);
+    assertCanWrite(input.principal, input.principal.workspaceId);
     return this.deps.credentials.revokeAllForActorInWorkspace(
       input.principal.actorId,
       input.principal.workspaceId,

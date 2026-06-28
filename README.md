@@ -103,5 +103,5 @@ Agent API (`Authorization: Bearer <agent-secret>`):
 This repo follows a dependency-ordered implementation plan. See
 [`docs/implementation-plan.md`](docs/implementation-plan.md) for the stable
 chunk breakdown and [`docs/progress.md`](docs/progress.md) for live status.
-C10 hardening work is implemented in the C10 worktree and verified by the
-orchestrator; the tracker marks C10 done.
+C0-C10 are merged on master and verified; the tracker marks the core
+implementation complete.

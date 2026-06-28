@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase } from '../db/connection.js';
 import {
   appliedMigrations,
@@ -72,6 +72,69 @@ beforeEach(() => {
   membership = new MembershipRepository(db);
   auth = new AuthRepository(db);
 });
+
+afterEach(() => {
+  removeRollbackIncompatibleRows();
+});
+
+function removeRollbackIncompatibleRows(): void {
+  if (!appliedMigrations(db).includes(4)) return;
+  db.exec(`
+    DELETE FROM comment_node
+    WHERE root_post_id IN (
+      SELECT p.id
+      FROM post p
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM actor a
+        WHERE a.id = p.author_actor_id
+          AND a.workspace_id = p.workspace_id
+      )
+    );
+    DELETE FROM comment_node
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM actor a
+      WHERE a.id = comment_node.author_actor_id
+        AND a.workspace_id = comment_node.workspace_id
+    );
+    DELETE FROM post
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM actor a
+      WHERE a.id = post.author_actor_id
+        AND a.workspace_id = post.workspace_id
+    );
+    DELETE FROM agent_quota_state
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM actor a
+      WHERE a.id = agent_quota_state.actor_id
+        AND a.workspace_id = agent_quota_state.workspace_id
+    );
+    DELETE FROM agent_idempotency_key
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM actor a
+      WHERE a.id = agent_idempotency_key.actor_id
+        AND a.workspace_id = agent_idempotency_key.workspace_id
+    );
+    DELETE FROM agent_audit_log
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM actor a
+      WHERE a.id = agent_audit_log.actor_id
+        AND a.workspace_id = agent_audit_log.workspace_id
+    );
+    DELETE FROM agent_credential
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM actor a
+      WHERE a.id = agent_credential.actor_id
+        AND a.workspace_id = agent_credential.workspace_id
+    );
+  `);
+}
 
 /**
  * Two-workspace fixture: each workspace has one human and one agent actor.
@@ -346,6 +409,32 @@ describe('C1a cross-workspace isolation via middleware', () => {
     expect(res.status).toBe(403);
     const body = (await res.json()) as { code: string };
     expect(body.code).toBe('workspace_mismatch');
+  });
+
+  it('redacts workspace identifiers from cross-workspace denial responses', async () => {
+    const { humanA, wsA, wsB } = twoWorkspaceFixture();
+    const app = guardedApp();
+
+    const read = await app.request(`/ws/${wsB.id}/read`, {
+      headers: headersFor(humanA.id, wsA.id),
+    });
+    expect(read.status).toBe(403);
+    const readBody = (await read.json()) as { error: string; code: string };
+    expect(readBody.code).toBe('workspace_mismatch');
+    expect(readBody.error).not.toContain(wsA.id);
+    expect(readBody.error).not.toContain(wsB.id);
+    expect(readBody.error).not.toContain(humanA.id);
+
+    const write = await app.request(`/ws/${wsB.id}/write`, {
+      method: 'POST',
+      headers: headersFor(humanA.id, wsA.id),
+    });
+    expect(write.status).toBe(403);
+    const writeBody = (await write.json()) as { error: string; code: string };
+    expect(writeBody.code).toBe('workspace_mismatch');
+    expect(writeBody.error).not.toContain(wsA.id);
+    expect(writeBody.error).not.toContain(wsB.id);
+    expect(writeBody.error).not.toContain(humanA.id);
   });
 
   it('allows a session-backed agent principal to read and write its own workspace', async () => {
@@ -860,6 +949,42 @@ describe('C9 auth/collaboration migration', () => {
   });
 
   it('rolls migration 0004 back cleanly to the pre-C9 schema shape', () => {
+    const { wsA, wsB, humanA, humanB, agentA } = twoWorkspaceFixture();
+    membership.createShare({
+      workspaceId: wsB.id,
+      actorId: humanA.id,
+      role: 'read',
+      sharedByActorId: humanB.id,
+    });
+    domain.createPost({
+      id: 'rollbackHomePost',
+      workspaceId: wsA.id,
+      authorActorId: humanA.id,
+      content: 'home rollback post',
+      lastActivityAt: '2026-01-01T00:00:00.000Z',
+    });
+    domain.createComment({
+      id: 'rollbackHomeComment',
+      workspaceId: wsA.id,
+      rootPostId: 'rollbackHomePost',
+      authorActorId: humanA.id,
+      content: 'home rollback comment',
+      createdAt: '2026-01-01T00:00:01.000Z',
+    });
+    db.prepare(
+      `INSERT INTO agent_idempotency_key (
+        key, actor_id, workspace_id, action, target_id, request_digest, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      'home-key',
+      agentA.id,
+      wsA.id,
+      'create_post',
+      'rollbackHomePost',
+      'digest-home',
+      '2026-01-01T00:00:02.000Z',
+    );
+
     migrateDown(db, migrations, 4);
     expect(appliedMigrations(db)).toEqual([1, 2, 3]);
     const tables = db
@@ -874,8 +999,141 @@ describe('C9 auth/collaboration migration', () => {
       .all() as { name: string }[];
     expect(memberColumns.map((c) => c.name)).not.toContain('status');
 
+    const idempotencyColumns = db
+      .prepare('PRAGMA table_info(agent_idempotency_key)')
+      .all() as { name: string; pk: number }[];
+    expect(
+      idempotencyColumns
+        .filter((column) => column.pk > 0)
+        .sort((a, b) => a.pk - b.pk)
+        .map((column) => column.name),
+    ).toEqual(['key', 'actor_id', 'action']);
+
+    const rollbackPost = new DomainRepository(db).getPost('rollbackHomePost');
+    expect(rollbackPost && !('isDeleted' in rollbackPost) ? rollbackPost.content : undefined).toBe(
+      'home rollback post',
+    );
+    const rollbackComment = new DomainRepository(db).getComment('rollbackHomeComment');
+    expect(
+      rollbackComment && !('isDeleted' in rollbackComment) ? rollbackComment.content : undefined,
+    ).toBe('home rollback comment');
+    const idempotencyRows = db
+      .prepare(
+        `SELECT key, actor_id AS actorId, workspace_id AS workspaceId, action
+         FROM agent_idempotency_key
+         WHERE key = ?`,
+      )
+      .all('home-key') as { key: string; actorId: string; workspaceId: string; action: string }[];
+    expect(idempotencyRows).toEqual([
+      { key: 'home-key', actorId: agentA.id, workspaceId: wsA.id, action: 'create_post' },
+    ]);
+
     migrateUp(db, migrations);
     expect(appliedMigrations(db)).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it('refuses to roll back 0004 when shared-workspace-authored posts would be discarded', () => {
+    const { humanA, humanB, wsB } = twoWorkspaceFixture();
+    membership.createShare({
+      workspaceId: wsB.id,
+      actorId: humanA.id,
+      role: 'write',
+      sharedByActorId: humanB.id,
+    });
+    domain.createPost({
+      id: 'sharedPost',
+      workspaceId: wsB.id,
+      authorActorId: humanA.id,
+      content: 'shared workspace post',
+      lastActivityAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    migrateDown(db, migrations, 5);
+    expect(appliedMigrations(db)).toEqual([1, 2, 3, 4]);
+    expect(() => migrateDown(db, migrations, 4)).toThrow(
+      /shared-workspace-authored posts exist/,
+    );
+    expect(appliedMigrations(db)).toEqual([1, 2, 3, 4]);
+    const post = new DomainRepository(db).getPost('sharedPost');
+    expect(post && !('isDeleted' in post) ? post.content : undefined).toBe(
+      'shared workspace post',
+    );
+  });
+
+  it('refuses to roll back 0004 when shared-workspace-authored comments would be discarded', () => {
+    const { humanA, humanB, wsB } = twoWorkspaceFixture();
+    membership.createShare({
+      workspaceId: wsB.id,
+      actorId: humanA.id,
+      role: 'write',
+      sharedByActorId: humanB.id,
+    });
+    domain.createPost({
+      id: 'sharedCommentPost',
+      workspaceId: wsB.id,
+      authorActorId: humanB.id,
+      content: 'workspace-local post',
+      lastActivityAt: '2026-01-01T00:00:00.000Z',
+    });
+    domain.createComment({
+      id: 'sharedComment',
+      workspaceId: wsB.id,
+      rootPostId: 'sharedCommentPost',
+      authorActorId: humanA.id,
+      content: 'shared workspace comment',
+      createdAt: '2026-01-01T00:00:01.000Z',
+    });
+
+    migrateDown(db, migrations, 5);
+    expect(appliedMigrations(db)).toEqual([1, 2, 3, 4]);
+    expect(() => migrateDown(db, migrations, 4)).toThrow(
+      /shared-workspace-authored comments exist/,
+    );
+    expect(appliedMigrations(db)).toEqual([1, 2, 3, 4]);
+    const comment = new DomainRepository(db).getComment('sharedComment');
+    expect(comment && !('isDeleted' in comment) ? comment.content : undefined).toBe(
+      'shared workspace comment',
+    );
+  });
+
+  it('refuses to roll back 0004 when C9 idempotency rows collide under the v3 primary key', () => {
+    const { agentA, humanB, wsB } = twoWorkspaceFixture();
+    membership.createShare({
+      workspaceId: wsB.id,
+      actorId: agentA.id,
+      role: 'write',
+      sharedByActorId: humanB.id,
+    });
+    const insert = db.prepare(
+      `INSERT INTO agent_idempotency_key (
+        key, actor_id, workspace_id, action, target_id, request_digest, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
+    insert.run(
+      'dup-key',
+      agentA.id,
+      'wsA',
+      'create_post',
+      'target-a',
+      'digest-a',
+      '2026-01-01T00:00:00.000Z',
+    );
+    insert.run(
+      'dup-key',
+      agentA.id,
+      wsB.id,
+      'create_post',
+      'target-b',
+      'digest-b',
+      '2026-01-02T00:00:00.000Z',
+    );
+
+    migrateDown(db, migrations, 5);
+    expect(appliedMigrations(db)).toEqual([1, 2, 3, 4]);
+    expect(() => migrateDown(db, migrations, 4)).toThrow(
+      /duplicate cross-workspace rows exist/,
+    );
+    expect(appliedMigrations(db)).toEqual([1, 2, 3, 4]);
   });
 });
 

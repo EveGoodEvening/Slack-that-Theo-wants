@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase } from '../db/connection.js';
 import {
   appliedMigrations,
@@ -48,6 +48,41 @@ beforeEach(() => {
   }
   migrateUp(db, migrations);
 });
+
+afterEach(() => {
+  removeRollbackIncompatibleContent();
+});
+
+function removeRollbackIncompatibleContent(): void {
+  if (!appliedMigrations(db).includes(4)) return;
+  db.exec(`
+    DELETE FROM comment_node
+    WHERE root_post_id IN (
+      SELECT p.id
+      FROM post p
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM actor a
+        WHERE a.id = p.author_actor_id
+          AND a.workspace_id = p.workspace_id
+      )
+    );
+    DELETE FROM comment_node
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM actor a
+      WHERE a.id = comment_node.author_actor_id
+        AND a.workspace_id = comment_node.workspace_id
+    );
+    DELETE FROM post
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM actor a
+      WHERE a.id = post.author_actor_id
+        AND a.workspace_id = post.workspace_id
+    );
+  `);
+}
 
 /** Build a fresh workspace + human + agent + post fixture. */
 function fixture(repo: DomainRepository) {

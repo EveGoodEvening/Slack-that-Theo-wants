@@ -41,13 +41,13 @@ export function assertCanRead(
   if (principal.workspaceId !== workspaceId) {
     throw new AuthorizationError(
       'workspace_mismatch',
-      `principal ${principal.actorId} (${principal.workspaceId}) cannot read workspace ${workspaceId}`,
+      'principal cannot read requested workspace',
     );
   }
   if (!hasRole(principal, 'read')) {
     throw new AuthorizationError(
       'read_forbidden',
-      `principal ${principal.actorId} lacks read role in workspace ${workspaceId}`,
+      'principal lacks read role',
     );
   }
 }
@@ -63,13 +63,13 @@ export function assertCanWrite(
   if (principal.workspaceId !== workspaceId) {
     throw new AuthorizationError(
       'workspace_mismatch',
-      `principal ${principal.actorId} (${principal.workspaceId}) cannot write workspace ${workspaceId}`,
+      'principal cannot write requested workspace',
     );
   }
   if (!hasRole(principal, 'write')) {
     throw new AuthorizationError(
       'write_forbidden',
-      `principal ${principal.actorId} lacks write role in workspace ${workspaceId}`,
+      'principal lacks write role',
     );
   }
 }

@@ -421,6 +421,114 @@ export const migration0004AuthCollaboration: Migration = {
     'CREATE INDEX idx_agent_quota_actor_time ON agent_quota_state (actor_id, occurred_at);',
   ],
   down: [
+    'DROP TRIGGER IF EXISTS temp.migration_0004_rollback_guard_message;',
+    'DROP TABLE IF EXISTS temp.migration_0004_rollback_guard;',
+    `
+    CREATE TEMP TABLE migration_0004_rollback_guard (
+      failure TEXT PRIMARY KEY NOT NULL
+    );
+    `,
+    `
+    CREATE TEMP TRIGGER migration_0004_rollback_guard_message
+    BEFORE INSERT ON migration_0004_rollback_guard
+    FOR EACH ROW
+    BEGIN
+      SELECT CASE
+        WHEN NEW.failure = 'shared_authored_posts'
+        THEN RAISE(ABORT, 'migration 0004 rollback cannot restore v3 schema: shared-workspace-authored posts exist')
+        WHEN NEW.failure = 'shared_authored_comments'
+        THEN RAISE(ABORT, 'migration 0004 rollback cannot restore v3 schema: shared-workspace-authored comments exist')
+        WHEN NEW.failure = 'duplicate_idempotency_v3_key'
+        THEN RAISE(ABORT, 'migration 0004 rollback cannot restore v3 agent_idempotency_key primary key: duplicate cross-workspace rows exist')
+        WHEN NEW.failure = 'shared_agent_control_plane_rows'
+        THEN RAISE(ABORT, 'migration 0004 rollback cannot restore v3 agent control-plane schema: shared-workspace rows exist')
+      END;
+    END;
+    `,
+    `
+    INSERT INTO migration_0004_rollback_guard (failure)
+    SELECT 'shared_authored_posts'
+    WHERE EXISTS (
+      SELECT 1
+      FROM post p
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM actor a
+        WHERE a.id = p.author_actor_id
+          AND a.workspace_id = p.workspace_id
+      )
+    );
+    `,
+    `
+    INSERT INTO migration_0004_rollback_guard (failure)
+    SELECT 'shared_authored_comments'
+    WHERE EXISTS (
+      SELECT 1
+      FROM comment_node c
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM actor a
+        WHERE a.id = c.author_actor_id
+          AND a.workspace_id = c.workspace_id
+      )
+    );
+    `,
+    `
+    INSERT INTO migration_0004_rollback_guard (failure)
+    SELECT 'duplicate_idempotency_v3_key'
+    WHERE EXISTS (
+      SELECT 1
+      FROM (
+        SELECT key, actor_id, action
+        FROM agent_idempotency_key
+        GROUP BY key, actor_id, action
+        HAVING COUNT(*) > 1
+      ) duplicate_v3_keys
+    );
+    `,
+    `
+    INSERT INTO migration_0004_rollback_guard (failure)
+    SELECT 'shared_agent_control_plane_rows'
+    WHERE EXISTS (
+      SELECT 1
+      FROM agent_quota_state q
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM actor a
+        WHERE a.id = q.actor_id
+          AND a.workspace_id = q.workspace_id
+      )
+    ) OR EXISTS (
+      SELECT 1
+      FROM agent_idempotency_key i
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM actor a
+        WHERE a.id = i.actor_id
+          AND a.workspace_id = i.workspace_id
+      )
+    ) OR EXISTS (
+      SELECT 1
+      FROM agent_audit_log l
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM actor a
+        WHERE a.id = l.actor_id
+          AND a.workspace_id = l.workspace_id
+      )
+    ) OR EXISTS (
+      SELECT 1
+      FROM agent_credential c
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM actor a
+        WHERE a.id = c.actor_id
+          AND a.workspace_id = c.workspace_id
+      )
+    );
+    `,
+    'DROP TRIGGER IF EXISTS temp.migration_0004_rollback_guard_message;',
+    'DROP TABLE IF EXISTS temp.migration_0004_rollback_guard;',
     'DROP INDEX IF EXISTS idx_agent_quota_actor_time;',
     'ALTER TABLE agent_quota_state RENAME TO agent_quota_state_c9;',
     `
@@ -454,7 +562,7 @@ export const migration0004AuthCollaboration: Migration = {
       target_id       TEXT NOT NULL,
       request_digest  TEXT NOT NULL,
       created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-      PRIMARY KEY (key, actor_id, workspace_id, action),
+      PRIMARY KEY (key, actor_id, action),
       FOREIGN KEY (actor_id) REFERENCES actor (id) ON DELETE CASCADE,
       FOREIGN KEY (workspace_id) REFERENCES workspace (id) ON DELETE RESTRICT,
       FOREIGN KEY (workspace_id, actor_id)
