@@ -4,18 +4,14 @@ import { AuthorizationError, type Principal } from './types.js';
 import type { AgentCredentialRepository } from './credentials.js';
 
 /**
- * C7 agent principal resolution.
+ * C7/C9 agent principal resolution.
  *
  * Resolves an agent Principal from a request carrying an agent API token in
  * the `Authorization: Bearer <secret>` header. The secret is verified against
- * the hashed `agent_credential` table; the resolved actor must be an agent
- * member of the credential's workspace. This is the agent-side counterpart to
- * the C1a stubbed `resolvePrincipal` (header-based) — both produce the same
- * `Principal` shape so the shared C1a authorization middleware and per-
- * resource checks apply unchanged to agent callers.
- *
- * C9 replaces the credential verification with real sign-in-backed tokens
- * while keeping the Principal shape and the middleware that consume it.
+ * the hashed `agent_credential` table; C9 scopes each credential to the
+ * credential workspace and requires the actor to be an active agent member of
+ * that workspace. The resulting Principal therefore inherits the credential's
+ * workspace/group scope and the current membership role.
  */
 
 /** The header carrying an agent API token. */
