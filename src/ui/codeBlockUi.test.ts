@@ -104,6 +104,9 @@ class FakeElement {
     if (selector === 'code') return this.tagName === 'code';
     if (selector === '.copy-code') return this.hasClass('copy-code');
     if (selector === '.code-block') return this.hasClass('code-block');
+    if (selector === '.preview-toggle[data-preview-for]') {
+      return this.hasClass('preview-toggle') && this.getAttribute('data-preview-for') !== null;
+    }
     if (selector === 'input[name="actorId"]') {
       return this.tagName === 'input' && this.getAttribute('name') === 'actorId';
     }
@@ -244,10 +247,10 @@ describe('C6 codeBlockUi browser scripts', () => {
     expect(copied).toEqual(['static code']);
   });
 
-  it('binds preview only to toggle buttons and leaves pane clicks inert', () => {
+  it('delegates preview only to toggle buttons and leaves pane clicks inert', () => {
     Function(PREVIEW_SCRIPT)();
 
-    document.pane.dispatchClick();
+    document.dispatchClick(document.pane);
 
     expect(document.fetchBodies).toEqual([]);
     expect(document.pane.innerHTML).toBe('');
@@ -257,7 +260,7 @@ describe('C6 codeBlockUi browser scripts', () => {
     Function(COPY_CODE_SCRIPT)();
     Function(PREVIEW_SCRIPT)();
 
-    document.toggle.dispatchClick();
+    document.dispatchClick(document.toggle);
     await flushPromises();
     document.dispatchClick(document.previewCopyButton());
     await flushPromises();

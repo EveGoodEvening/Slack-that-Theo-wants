@@ -13,6 +13,7 @@ import { MembershipRepository } from '../security/membership.js';
 import { PRINCIPAL_HEADERS } from '../security/principal.js';
 import { createApp, type AppDeps } from '../index.js';
 import { ACTIVITY_EVENT_TYPES } from '../api/activityEvents.js';
+import { PREVIEW_SCRIPT } from './codeBlockUi.js';
 
 /**
  * C5 conversation UI tests.
@@ -599,7 +600,9 @@ describe('C6 code blocks in the conversation UI', () => {
 
 type PostDetailRealtimeMessage = { data: string };
 type PostDetailRealtimeListener = (message: PostDetailRealtimeMessage) => void;
+type PostDetailRealtimeDomListener = (event: { target: PostDetailRealtimeElement }) => void;
 type PostDetailFetchResponse = { ok: boolean; text(): Promise<string> };
+type PostDetailFetchInit = { method?: string; headers?: Record<string, string>; body?: string };
 
 class PostDetailRealtimeEventSource {
   static instances: PostDetailRealtimeEventSource[] = [];
@@ -645,10 +648,11 @@ class PostDetailRealtimeElement {
     this.tagName = tagName.toLowerCase();
     this.html = html;
     this.ownerDocument = ownerDocument;
-    if (this.tagName === 'textarea') this.value = decodeHtmlEntities(html);
     for (const [name, value] of Object.entries(attrs)) {
       this.attributes.set(name, value);
     }
+    if (this.tagName === 'textarea') this.value = decodeHtmlEntities(html);
+    if (this.tagName === 'input') this.value = this.getAttribute('value') ?? '';
   }
 
   get innerHTML(): string {
@@ -749,6 +753,7 @@ class PostDetailRealtimeElement {
 
   click(): void {
     for (const listener of this.domListeners.get('click') ?? []) listener();
+    if (this.ownerDocument) this.ownerDocument.dispatchClick(this);
   }
 
   focus(): void {
@@ -823,6 +828,18 @@ function parsePostDetailRealtimeConversation(
       form.appendChild(textarea);
     }
 
+    const inputPattern = /<input\b([^>]*)\/?>(?:<\/input>)?/g;
+    for (let inputMatch = inputPattern.exec(formHtml); inputMatch !== null; inputMatch = inputPattern.exec(formHtml)) {
+      const inputAttrs = inputMatch[1] ?? '';
+      const input = new PostDetailRealtimeElement(
+        'input',
+        parsePostDetailRealtimeAttributes(inputAttrs),
+        '',
+        ownerDocument,
+      );
+      form.appendChild(input);
+    }
+
     const buttonPattern = /<button\b([^>]*)>([\s\S]*?)<\/button>/g;
     for (let buttonMatch = buttonPattern.exec(formHtml); buttonMatch !== null; buttonMatch = buttonPattern.exec(formHtml)) {
       const buttonAttrs = buttonMatch[1] ?? '';
@@ -835,6 +852,20 @@ function parsePostDetailRealtimeConversation(
       );
       button.textContent = stripTags(buttonHtml);
       form.appendChild(button);
+    }
+
+    const divPattern = /<div\b([^>]*)>([\s\S]*?)<\/div>/g;
+    for (let divMatch = divPattern.exec(formHtml); divMatch !== null; divMatch = divPattern.exec(formHtml)) {
+      const divAttrs = divMatch[1] ?? '';
+      const divHtml = divMatch[2] ?? '';
+      const div = new PostDetailRealtimeElement(
+        'div',
+        parsePostDetailRealtimeAttributes(divAttrs),
+        divHtml,
+        ownerDocument,
+      );
+      div.textContent = stripTags(divHtml);
+      form.appendChild(div);
     }
 
     section.appendChild(form);
@@ -868,6 +899,7 @@ class PostDetailRealtimeDocument {
   readonly root: PostDetailRealtimeElement;
   readonly status: PostDetailRealtimeElement;
   activeElement: PostDetailRealtimeElement | null = null;
+  private readonly domListeners = new Map<string, PostDetailRealtimeDomListener[]>();
 
   constructor() {
     this.root = new PostDetailRealtimeElement('main', {}, '', this);
@@ -885,6 +917,18 @@ class PostDetailRealtimeDocument {
         this,
       ),
     );
+  }
+
+  addEventListener(type: string, listener: PostDetailRealtimeDomListener): void {
+    const listeners = this.domListeners.get(type) ?? [];
+    listeners.push(listener);
+    this.domListeners.set(type, listeners);
+  }
+
+  dispatchClick(target: PostDetailRealtimeElement): void {
+    for (const listener of this.domListeners.get('click') ?? []) {
+      listener({ target });
+    }
   }
 
   querySelector(selector: string): PostDetailRealtimeElement | null {
@@ -980,7 +1024,8 @@ function extractPostDetailRealtimeScript(html: string): string {
 
 function installPostDetailRealtimeGlobals(
   document: PostDetailRealtimeDocument,
-  fetchResponse: (url: string) => Promise<PostDetailFetchResponse>,
+  fetchResponse: (url: string, init?: PostDetailFetchInit) => Promise<PostDetailFetchResponse>,
+  fetchInits?: PostDetailFetchInit[],
 ): string[] {
   const fetches: string[] = [];
   PostDetailRealtimeEventSource.instances = [];
@@ -990,9 +1035,10 @@ function installPostDetailRealtimeGlobals(
     configurable: true,
   });
   Object.defineProperty(globalThis, 'fetch', {
-    value: (url: string, _init: unknown) => {
+    value: (url: string, init?: PostDetailFetchInit) => {
       fetches.push(url);
-      return fetchResponse(url);
+      if (fetchInits) fetchInits.push(init ?? {});
+      return fetchResponse(url, init);
     },
     configurable: true,
   });
@@ -1204,6 +1250,85 @@ describe('C8 post detail realtime progressive enhancement', () => {
     replyButtonAfter.click();
     expect(topPreviewClicks).toBe(1);
     expect(replyPreviewClicks).toBe(1);
+  });
+
+  it('binds preview controls for reply composers introduced by a realtime refresh', async () => {
+    const { workspace, ada, bo } = workspaceFixture();
+    seedPost(
+      'post1',
+      workspace.id,
+      ada.id,
+      'Realtime preview rebind post',
+      '2024-01-01T00:00:00.000Z',
+    );
+    const a = app();
+    const detail = await getPostDetail(a, 'post1', ada.id, workspace.id);
+    expect(detail.status).toBe(200);
+
+    const script = extractPostDetailRealtimeScript(detail.html);
+    const document = new PostDetailRealtimeDocument();
+    const fetchInits: PostDetailFetchInit[] = [];
+    const fetches = installPostDetailRealtimeGlobals(
+      document,
+      async (url) => {
+        if (url === '/feed/preview') {
+          return { ok: true, text: async () => '<p>rendered realtime preview</p>' };
+        }
+        const res = await a.request(url);
+        return { ok: res.status === 200, text: () => res.text() };
+      },
+      fetchInits,
+    );
+
+    Function(PREVIEW_SCRIPT)();
+    Function(script)();
+    const source = currentPostDetailEventSource();
+
+    seedComment({
+      id: 'comment-new-preview-parent',
+      workspaceId: workspace.id,
+      rootPostId: 'post1',
+      authorActorId: bo.id,
+      content: 'fresh parent with new reply composer',
+      createdAt: '2024-01-02T00:00:00.000Z',
+    });
+    source.emit(ACTIVITY_EVENT_TYPES.commentCreated, {
+      rootPostId: 'post1',
+      rootPostLastActivityAt: '2024-01-02T00:00:00.000Z',
+    });
+    await flushPromises();
+
+    const fragmentUrl = '/feed/post1/fragments/conversation?actorId=ada&workspaceId=wsA';
+    expect(fetches).toEqual([fragmentUrl]);
+    const freshTextareaId = 'reply-comment-new-preview-parent';
+    const freshTextarea = requirePostDetailRealtimeElement(document, freshTextareaId);
+    freshTextarea.value = 'preview from fresh composer';
+    const freshForm = freshTextarea.closest('form');
+    const freshButton = freshForm?.querySelector(
+      '.preview-toggle[data-preview-for="reply-comment-new-preview-parent"]',
+    );
+    const freshPane = freshForm?.querySelector(
+      '.composer-preview[data-preview-for="reply-comment-new-preview-parent"]',
+    );
+    expect(freshButton).not.toBeNull();
+    expect(freshPane).not.toBeNull();
+    if (!freshButton || !freshPane) {
+      throw new Error('expected fresh reply composer preview controls');
+    }
+
+    freshButton.click();
+    expect(freshPane.innerHTML).toBe('<span class="preview-label">Preview…</span>');
+    await flushPromises();
+
+    expect(fetches).toEqual([fragmentUrl, '/feed/preview']);
+    expect(fetchInits[1]).toEqual({
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'content=preview+from+fresh+composer&actorId=ada&workspaceId=wsA',
+    });
+    expect(freshPane.innerHTML).toBe(
+      '<span class="preview-label">Preview</span><p>rendered realtime preview</p>',
+    );
   });
 
   it('ignores a stale conversation fragment when matching post-detail fetches resolve out of order', async () => {
