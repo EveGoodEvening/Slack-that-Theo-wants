@@ -41,7 +41,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
 | C6    | done         | Verified: npm install, test (192 tests), build, lint, typecheck |
 | C7    | done         | Verified: npm install, test (240 tests), build, lint, typecheck |
 | C8    | done         | Verified: npm install, targeted realtime/preview tests (36 tests), full test (248 tests), build, lint, typecheck after review fixes |
-| C9    | done         | Verified: npm install, targeted C9 tests (172 tests), full test (262 tests), build, lint, typecheck |
+| C9    | done         | Verified: npm install, targeted review-fix tests (104 tests), full test (267 tests), build, lint, typecheck after review fixes |
 | C10   | not started  | Depends on all core flows |
 
 ## C0 — Product/architecture baseline and scaffold
@@ -420,3 +420,13 @@ Rules (mirrored from `docs/implementation-plan.md`):
   src/ui/postDetail.test.ts src/api/activityRoutes.test.ts`, 172 tests), full
   `npm test` (262 tests), `npm run build`, `npm run lint`, and
   `npm run typecheck`. C9 is `done`.
+- 2026-06-28 — Chunk C9: review blockers fixed in
+  `/root/gitfiles/Slack-that-Theo-wants-C9` without running commands per
+  instruction. Revalidated SSE stream membership before event delivery,
+  restored strongest accepted invite role on share revocation, scoped agent
+  idempotency keys by workspace, scoped `/agents/audit` reads to the credential
+  workspace, and added targeted blocker coverage. Orchestrator verified targeted
+  review-fix tests (`npm test -- src/api/activityRoutes.test.ts
+  src/security/security.test.ts src/api/agentRoutes.test.ts`, 104 tests), full
+  `npm test` (267 tests), `npm run build`, `npm run lint`, and
+  `npm run typecheck` after review fixes. C9 is `done`.

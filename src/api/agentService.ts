@@ -309,7 +309,11 @@ export class AgentService {
     limit?: number;
   }): AgentAuditEntry[] {
     return this.deps.audit
-      .listForActor(input.principal.actorId, input.limit ?? 100)
+      .listForActorInWorkspace(
+        input.principal.actorId,
+        input.principal.workspaceId,
+        input.limit ?? 100,
+      )
       .map((row) => ({
         id: row.id,
         action: row.action,
@@ -365,9 +369,9 @@ export class AgentService {
    * Run an agent write under the idempotency + audit + quota contract.
    *
    * - If an idempotency key is supplied and a record already exists for this
-   *   actor + action, the current request digest is compared to the stored
-   *   digest. On a match the stored target is returned as a replay (no new
-   *   write, no bump, no audit, no quota consumed); the original target is
+   *   actor + workspace + action, the current request digest is compared to the
+   *   stored digest. On a match the stored target is returned as a replay (no
+   *   new write, no bump, no audit, no quota consumed); the original target is
    *   re-read via `refetch` so the caller receives the current DTO shape. On a
    *   mismatch `IdempotencyKeyReuseError` is thrown — the key was reused for a
    *   different payload, so the request is rejected without a write or bump.
@@ -385,7 +389,12 @@ export class AgentService {
     assertAgent(principal);
 
     if (idempotencyKey !== undefined && idempotencyKey.length > 0) {
-      const existing = this.deps.idempotency.lookup(idempotencyKey, principal.actorId, action);
+      const existing = this.deps.idempotency.lookup(
+        idempotencyKey,
+        principal.actorId,
+        principal.workspaceId,
+        action,
+      );
       if (existing !== undefined) {
         // Reject a key reused with a different payload before any replay or
         // write: the digest must match the original request exactly.

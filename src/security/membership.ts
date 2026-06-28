@@ -348,7 +348,8 @@ export class MembershipRepository {
          WHERE workspace_id = ?
            AND accepted_by_actor_id = ?
            AND status = 'accepted'
-         ORDER BY accepted_at DESC, created_at DESC, id DESC
+         ORDER BY CASE role WHEN 'write' THEN 0 ELSE 1 END,
+                  accepted_at DESC, created_at DESC, id DESC
          LIMIT 1`,
       )
       .get(workspaceId, actorId) as { role: Role } | undefined;

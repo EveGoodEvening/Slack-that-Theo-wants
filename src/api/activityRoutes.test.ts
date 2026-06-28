@@ -101,6 +101,7 @@ function seedPost(
 
 interface ActivityStreamTestReader {
   nextEvent(): Promise<ActivityEvent>;
+  nextEventOrClosed(): Promise<ActivityEvent | undefined>;
   cancel(): Promise<void>;
 }
 
@@ -120,23 +121,29 @@ async function openActivityStream(
   }
   const decoder = new TextDecoder();
   let buffer = '';
+  const readNextEvent = async (): Promise<ActivityEvent | undefined> => {
+    while (true) {
+      const separator = buffer.indexOf('\n\n');
+      if (separator >= 0) {
+        const block = buffer.slice(0, separator);
+        buffer = buffer.slice(separator + 2);
+        const parsed = parseSseBlock(block);
+        if (parsed !== undefined) return parsed;
+        continue;
+      }
+      const chunk = await reader.read();
+      if (chunk.done) return undefined;
+      buffer += decoder.decode(chunk.value, { stream: true });
+    }
+  };
   return {
     async nextEvent(): Promise<ActivityEvent> {
-      while (true) {
-        const separator = buffer.indexOf('\n\n');
-        if (separator >= 0) {
-          const block = buffer.slice(0, separator);
-          buffer = buffer.slice(separator + 2);
-          const parsed = parseSseBlock(block);
-          if (parsed !== undefined) return parsed;
-          continue;
-        }
-        const chunk = await reader.read();
-        if (chunk.done) {
-          throw new Error('SSE stream ended before an activity event arrived');
-        }
-        buffer += decoder.decode(chunk.value, { stream: true });
-      }
+      const event = await readNextEvent();
+      if (event !== undefined) return event;
+      throw new Error('SSE stream ended before an activity event arrived');
+    },
+    async nextEventOrClosed(): Promise<ActivityEvent | undefined> {
+      return readNextEvent();
     },
     async cancel(): Promise<void> {
       await reader.cancel();
@@ -276,6 +283,36 @@ describe('C8 activity SSE contract', () => {
     } finally {
       await streamA.cancel();
       await streamB.cancel();
+    }
+  });
+
+  it('closes the stream before future events after membership is suspended', async () => {
+    twoWorkspaceFixture();
+    domain.createActor({ id: 'humanA2', workspaceId: 'wsA', kind: 'human', displayName: 'Ava' });
+    seedPost('postA', 'wsA', 'humanA2', 'A post', '2024-01-01T00:00:00.000Z');
+    const a = app();
+    const stream = await openActivityStream(a, 'humanA', 'wsA');
+    try {
+      membership.suspendMembership('wsA', 'humanA');
+      await createCommentViaApi(a, 'postA', 'humanA2', 'wsA', 'after suspension');
+      await expect(stream.nextEventOrClosed()).resolves.toBeUndefined();
+    } finally {
+      await stream.cancel();
+    }
+  });
+
+  it('closes the stream before future events after membership is removed', async () => {
+    twoWorkspaceFixture();
+    domain.createActor({ id: 'humanA2', workspaceId: 'wsA', kind: 'human', displayName: 'Ava' });
+    seedPost('postA', 'wsA', 'humanA2', 'A post', '2024-01-01T00:00:00.000Z');
+    const a = app();
+    const stream = await openActivityStream(a, 'humanA', 'wsA');
+    try {
+      expect(membership.removeMembership('wsA', 'humanA')).toBe(1);
+      await createCommentViaApi(a, 'postA', 'humanA2', 'wsA', 'after removal');
+      await expect(stream.nextEventOrClosed()).resolves.toBeUndefined();
+    } finally {
+      await stream.cancel();
     }
   });
 });

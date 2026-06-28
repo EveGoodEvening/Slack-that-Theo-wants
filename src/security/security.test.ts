@@ -763,6 +763,35 @@ describe('C9 local auth and collaboration membership', () => {
     const restored = membership.resolveMembership(wsB.id, humanA.id);
     expect(restored?.role).toBe('read');
   });
+
+  it('revoking a share restores the strongest accepted invite role', () => {
+    const { wsB, humanA, humanB } = twoWorkspaceFixture();
+    const writeInvite = membership.createInvite({
+      workspaceId: wsB.id,
+      email: 'ada-write@example.com',
+      role: 'write',
+      invitedByActorId: humanB.id,
+    });
+    membership.acceptInvite(writeInvite.id, humanA.id);
+    const readInvite = membership.createInvite({
+      workspaceId: wsB.id,
+      email: 'ada-read@example.com',
+      role: 'read',
+      invitedByActorId: humanB.id,
+    });
+    membership.acceptInvite(readInvite.id, humanA.id);
+    const share = membership.createShare({
+      workspaceId: wsB.id,
+      actorId: humanA.id,
+      role: 'write',
+      sharedByActorId: humanB.id,
+    });
+
+    membership.revokeShare(share.id);
+
+    const restored = membership.resolveMembership(wsB.id, humanA.id);
+    expect(restored?.role).toBe('write');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -786,6 +815,15 @@ describe('C9 auth/collaboration migration', () => {
     expect(memberColumns.map((c) => c.name)).toEqual(
       expect.arrayContaining(['status', 'invited_by_actor_id', 'accepted_at']),
     );
+    const idempotencyColumns = db
+      .prepare('PRAGMA table_info(agent_idempotency_key)')
+      .all() as { name: string; pk: number }[];
+    expect(
+      idempotencyColumns
+        .filter((column) => column.pk > 0)
+        .sort((a, b) => a.pk - b.pk)
+        .map((column) => column.name),
+    ).toEqual(['key', 'actor_id', 'workspace_id', 'action']);
   });
 
   it('migrates from pre-C9 data without losing existing workspace content or memberships', () => {

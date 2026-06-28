@@ -676,6 +676,52 @@ describe('C7 audit logging for agent write actions', () => {
     expect(body.actions).toHaveLength(1);
     expect(expectArrayItem(body.actions, 0).action).toBe('create_post');
   });
+
+  it('/agents/audit is scoped to the credential workspace for multi-workspace agents', async () => {
+    twoWorkspaceFixture();
+    membership.createShare({
+      workspaceId: 'wsB',
+      actorId: 'agentA',
+      role: 'write',
+      sharedByActorId: 'humanB',
+    });
+    const issuedA = credentials.issue({ actorId: 'agentA', workspaceId: 'wsA' });
+    const issuedB = credentials.issue({ actorId: 'agentA', workspaceId: 'wsB' });
+    const a = app();
+
+    const postA = await a.request('/agents/posts', {
+      method: 'POST',
+      headers: {
+        ...bearerToken(issuedA.secret),
+        ...idempotencyHeader('audit-scope-a'),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ content: 'workspace A audit row' }),
+    });
+    expect(postA.status).toBe(201);
+    const postB = await a.request('/agents/posts', {
+      method: 'POST',
+      headers: {
+        ...bearerToken(issuedB.secret),
+        ...idempotencyHeader('audit-scope-b'),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ content: 'workspace B audit row' }),
+    });
+    expect(postB.status).toBe(201);
+
+    const auditA = await a.request('/agents/audit', { headers: bearerToken(issuedA.secret) });
+    expect(auditA.status).toBe(200);
+    const bodyA = (await auditA.json()) as { actions: { idempotencyKey: string | null }[] };
+    expect(bodyA.actions).toHaveLength(1);
+    expect(expectArrayItem(bodyA.actions, 0).idempotencyKey).toBe('audit-scope-a');
+
+    const auditB = await a.request('/agents/audit', { headers: bearerToken(issuedB.secret) });
+    expect(auditB.status).toBe(200);
+    const bodyB = (await auditB.json()) as { actions: { idempotencyKey: string | null }[] };
+    expect(bodyB.actions).toHaveLength(1);
+    expect(expectArrayItem(bodyB.actions, 0).idempotencyKey).toBe('audit-scope-b');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -843,6 +889,50 @@ describe('C7 idempotency: no duplicate reply or extra bump on replay', () => {
 
     // Only one reply node under the comment's post beyond the seeded comment.
     expect(domain.countCommentsForPost('pIdem2')).toBe(2);
+  });
+
+  it('scopes the same idempotency key and action independently by workspace', async () => {
+    twoWorkspaceFixture();
+    membership.createShare({
+      workspaceId: 'wsB',
+      actorId: 'agentA',
+      role: 'write',
+      sharedByActorId: 'humanB',
+    });
+    const issuedA = credentials.issue({ actorId: 'agentA', workspaceId: 'wsA' });
+    const issuedB = credentials.issue({ actorId: 'agentA', workspaceId: 'wsB' });
+    const key = 'same-key-two-workspaces';
+    const a = app();
+
+    const resA = await a.request('/agents/posts', {
+      method: 'POST',
+      headers: {
+        ...bearerToken(issuedA.secret),
+        ...idempotencyHeader(key),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ content: 'workspace A idempotent post' }),
+    });
+    expect(resA.status).toBe(201);
+    const bodyA = (await resA.json()) as { result: { id: string; workspaceId: string } };
+
+    const resB = await a.request('/agents/posts', {
+      method: 'POST',
+      headers: {
+        ...bearerToken(issuedB.secret),
+        ...idempotencyHeader(key),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ content: 'workspace B idempotent post' }),
+    });
+    expect(resB.status).toBe(201);
+    const bodyB = (await resB.json()) as { result: { id: string; workspaceId: string } };
+
+    expect(bodyA.result.workspaceId).toBe('wsA');
+    expect(bodyB.result.workspaceId).toBe('wsB');
+    expect(bodyB.result.id).not.toBe(bodyA.result.id);
+    expect(idempotency.lookup(key, 'agentA', 'wsA', 'create_post')?.targetId).toBe(bodyA.result.id);
+    expect(idempotency.lookup(key, 'agentA', 'wsB', 'create_post')?.targetId).toBe(bodyB.result.id);
   });
 });
 

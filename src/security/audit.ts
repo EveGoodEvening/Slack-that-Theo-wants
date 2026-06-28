@@ -75,6 +75,25 @@ export class AgentAuditRepository {
       .all(actorId, limit) as AgentAuditRow[];
   }
 
+  /** List audit records for an actor in one workspace, newest first. */
+  listForActorInWorkspace(
+    actorId: string,
+    workspaceId: string,
+    limit = 100,
+  ): AgentAuditRow[] {
+    return this.db
+      .prepare(
+        `SELECT id, actor_id AS actorId, workspace_id AS workspaceId, action,
+                target_id AS targetId, root_post_id AS rootPostId,
+                idempotency_key AS idempotencyKey, created_at AS createdAt
+         FROM agent_audit_log
+         WHERE actor_id = ? AND workspace_id = ?
+         ORDER BY created_at DESC, id DESC
+         LIMIT ?`,
+      )
+      .all(actorId, workspaceId, limit) as AgentAuditRow[];
+  }
+
   /** List audit records for a workspace, newest first. */
   listForWorkspace(workspaceId: string, limit = 100): AgentAuditRow[] {
     return this.db

@@ -5,6 +5,7 @@ import {
   assertCanRead,
   authorizationErrorResponse,
   AuthorizationError,
+  membershipToPrincipal,
   resolvePrincipal,
   type AuthVariables,
   type Principal,
@@ -54,7 +55,15 @@ export function activityRoutes(deps: ActivityRouteDeps): Hono<{
     const stream = new ReadableStream<Uint8Array>(
       {
         start(controller) {
+          let closed = false;
+          const close = (): void => {
+            if (closed) return;
+            closed = true;
+            unsubscribe();
+            controller.close();
+          };
           const write = (chunk: string): void => {
+            if (closed) return;
             if (controller.desiredSize === null || controller.desiredSize <= 0) {
               // Activity events are hints; drop instead of accumulating
               // unbounded per-subscriber memory for a slow client.
@@ -64,6 +73,23 @@ export function activityRoutes(deps: ActivityRouteDeps): Hono<{
           };
           write(': c8-connected\n\n');
           unsubscribe = deps.events.subscribe(principal, (event) => {
+            const current = deps.membership.resolveMembership(
+              principal.workspaceId,
+              principal.actorId,
+            );
+            if (current === undefined) {
+              close();
+              return;
+            }
+            try {
+              assertCanRead(membershipToPrincipal(current), event.workspaceId);
+            } catch (err) {
+              if (err instanceof AuthorizationError) {
+                close();
+                return;
+              }
+              throw err;
+            }
             write(serializeActivitySse(event));
           });
         },

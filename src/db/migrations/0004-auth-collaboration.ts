@@ -386,7 +386,7 @@ export const migration0004AuthCollaboration: Migration = {
       target_id       TEXT NOT NULL,
       request_digest  TEXT NOT NULL,
       created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-      PRIMARY KEY (key, actor_id, action),
+      PRIMARY KEY (key, actor_id, workspace_id, action),
       FOREIGN KEY (actor_id) REFERENCES actor (id) ON DELETE CASCADE,
       FOREIGN KEY (workspace_id) REFERENCES workspace (id) ON DELETE RESTRICT
     );
@@ -399,7 +399,7 @@ export const migration0004AuthCollaboration: Migration = {
     FROM agent_idempotency_key_c7;
     `,
     'DROP TABLE agent_idempotency_key_c7;',
-    'CREATE INDEX idx_agent_idempotency_actor ON agent_idempotency_key (actor_id, created_at);',
+    'CREATE INDEX idx_agent_idempotency_actor ON agent_idempotency_key (actor_id, workspace_id, created_at);',
     'DROP INDEX IF EXISTS idx_agent_quota_actor_time;',
     'ALTER TABLE agent_quota_state RENAME TO agent_quota_state_c7;',
     `
@@ -454,7 +454,7 @@ export const migration0004AuthCollaboration: Migration = {
       target_id       TEXT NOT NULL,
       request_digest  TEXT NOT NULL,
       created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-      PRIMARY KEY (key, actor_id, action),
+      PRIMARY KEY (key, actor_id, workspace_id, action),
       FOREIGN KEY (actor_id) REFERENCES actor (id) ON DELETE CASCADE,
       FOREIGN KEY (workspace_id) REFERENCES workspace (id) ON DELETE RESTRICT,
       FOREIGN KEY (workspace_id, actor_id)
