@@ -13,6 +13,7 @@ import {
   isCommentTombstone,
   isPostTombstone,
 } from './index.js';
+import { MembershipRepository } from '../security/membership.js';
 
 /**
  * C1 repository/schema tests.
@@ -92,7 +93,7 @@ function expectLiveComment(comment: ReturnType<DomainRepository['getComment']>) 
 describe('C1 migrations', () => {
   it('applies cleanly on a fresh database', () => {
     // Later chunks register additional migrations; a fresh DB applies the full chain.
-    expect(appliedMigrations(db)).toEqual([1, 2, 3]);
+    expect(appliedMigrations(db)).toEqual([1, 2, 3, 4]);
     // Core tables exist.
     const tables = db
       .prepare(
@@ -125,7 +126,7 @@ describe('C1 migrations', () => {
   it('is idempotent when re-applied after a rollback', () => {
     migrateDown(db, migrations, 1);
     migrateUp(db, migrations);
-    expect(appliedMigrations(db)).toEqual([1, 2, 3]);
+    expect(appliedMigrations(db)).toEqual([1, 2, 3, 4]);
     const repo = new DomainRepository(db);
     const { post } = fixture(repo);
     expect(post.id).toBe('post1');
@@ -363,19 +364,27 @@ describe('C1 parent/child constraints and arbitrary depth', () => {
     ).toThrowError(/comment_node workspace_id must match its root post workspace/);
   });
 
-  it('rejects a post whose author belongs to a different workspace', () => {
+  it('allows a shared-workspace post author whose home workspace differs', () => {
     const repo = new DomainRepository(db);
     const { human } = fixture(repo);
     const ws2 = repo.createWorkspace({ id: 'ws2', slug: 'team-b', name: 'Team B' });
-    expect(() =>
-      repo.createPost({
-        id: 'cross-ws-post',
-        workspaceId: ws2.id,
-        authorActorId: human.id,
-        content: 'cross-workspace post',
-        lastActivityAt: '2026-06-27T00:00:00.000Z',
-      }),
-    ).toThrowError(/FOREIGN KEY constraint failed/);
+    const membership = new MembershipRepository(db);
+    membership.createShare({
+      workspaceId: ws2.id,
+      actorId: human.id,
+      role: 'write',
+    });
+
+    const post = repo.createPost({
+      id: 'shared-workspace-post',
+      workspaceId: ws2.id,
+      authorActorId: human.id,
+      content: 'cross-home shared post',
+      lastActivityAt: '2026-06-27T00:00:00.000Z',
+    });
+
+    expect(post.workspaceId).toBe(ws2.id);
+    expect(post.authorActorId).toBe(human.id);
   });
 });
 

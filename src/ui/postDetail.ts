@@ -20,15 +20,12 @@ import {
   type RenderableContent,
 } from '../rendering/index.js';
 import type { MembershipRepository } from '../security/membership.js';
+import type { AuthRepository } from '../security/auth.js';
 import { AuthorizationError, type Principal } from '../security/types.js';
 import {
-  ACTOR_FIELD,
-  ACTOR_HEADER_FIELD,
   escapeText,
   formField,
   resolveUiPrincipal,
-  WORKSPACE_FIELD,
-  WORKSPACE_HEADER_FIELD,
 } from './shared.js';
 
 /**
@@ -45,6 +42,7 @@ const MAX_RENDER_DEPTH = 8;
 
 export interface PostDetailRouteDeps {
   membership: MembershipRepository;
+  auth: AuthRepository;
   postService: PostService;
   commentService: CommentService;
 }
@@ -67,16 +65,11 @@ function renderPostArticle(post: PostDTO): string {
     </article>`;
 }
 
-function renderPrincipalFields(principal: Principal): string {
-  return `      <input type="hidden" name="${ACTOR_FIELD}" value="${escapeText(principal.actorId)}" />
-      <input type="hidden" name="${WORKSPACE_FIELD}" value="${escapeText(principal.workspaceId)}" />`;
-}
 
-function renderCommentComposer(postId: string, principal: Principal): string {
+function renderCommentComposer(postId: string): string {
   return `    <form class="comment-composer" method="post" action="/feed/${escapeText(postId)}/comments">
       <label for="new-comment">Add a comment</label>
       <textarea id="new-comment" name="content" required maxlength="4000" placeholder="Write a comment…"></textarea>
-${renderPrincipalFields(principal)}
       <button type="submit">Comment</button>
       <button type="button" class="preview-toggle" data-preview-for="new-comment" aria-pressed="false">Preview</button>
       <div class="composer-preview" data-preview-for="new-comment"></div>
@@ -87,13 +80,11 @@ function renderReplyComposer(
   postId: string,
   parentId: string,
   parentAuthor: string,
-  principal: Principal,
 ): string {
   const escapedParentId = escapeText(parentId);
   return `      <form class="reply-composer" method="post" action="/feed/${escapeText(postId)}/comments/${escapedParentId}/replies">
         <label for="reply-${escapedParentId}">Reply to ${escapeText(parentAuthor)}</label>
         <textarea id="reply-${escapedParentId}" name="content" required maxlength="4000" placeholder="Reply…"></textarea>
-${renderPrincipalFields(principal)}
         <button type="submit">Reply</button>
         <button type="button" class="preview-toggle" data-preview-for="reply-${escapedParentId}" aria-pressed="false">Preview</button>
         <div class="composer-preview" data-preview-for="reply-${escapedParentId}"></div>
@@ -120,12 +111,11 @@ function cappedDescendantCount(node: CommentTreeNode): { count: number; capped: 
 function renderChildren(
   children: CommentTreeNode[],
   postId: string,
-  principal: Principal,
   renderDepth: number,
 ): string {
   if (children.length === 0) return '';
   const rendered = children
-    .map((child) => renderCommentNode(child, postId, principal, renderDepth + 1))
+    .map((child) => renderCommentNode(child, postId, renderDepth + 1))
     .join('\n');
   if (renderDepth >= COLLAPSE_DEPTH) {
     return `      <details class="reply-branch" open>
@@ -143,7 +133,6 @@ ${rendered}
 function renderCommentNode(
   tree: CommentTreeNode,
   postId: string,
-  principal: Principal,
   renderDepth: number,
 ): string {
   const { node } = tree;
@@ -160,7 +149,7 @@ function renderCommentNode(
       : '';
   const replyForm = isDeletedComment(node)
     ? ''
-    : renderReplyComposer(postId, node.id, node.authorActorId, principal);
+    : renderReplyComposer(postId, node.id, node.authorActorId);
   let children: string;
   if (renderDepth >= MAX_RENDER_DEPTH) {
     if (tree.children.length === 0) {
@@ -171,7 +160,7 @@ function renderCommentNode(
       children = `      <p class="reply-depth-safeguard">${hiddenLabel} deeper ${hiddenDescendants.count === 1 && !hiddenDescendants.capped ? 'reply is' : 'replies are'} collapsed to keep this page readable.</p>`;
     }
   } else {
-    children = renderChildren(tree.children, postId, principal, renderDepth);
+    children = renderChildren(tree.children, postId, renderDepth);
   }
   const parentId = node.parentId === null ? '' : escapeText(node.parentId);
   return `        <li class="comment-node depth-${Math.min(renderDepth, MAX_RENDER_DEPTH)}" data-comment-id="${escapeText(node.id)}" data-parent-id="${parentId}">
@@ -191,40 +180,35 @@ ${children}
 function renderConversation(
   comments: CommentTreeNode[],
   postId: string,
-  principal: Principal,
 ): string {
   if (comments.length === 0) {
     return '    <p class="conversation-empty">No comments yet. Start the conversation.</p>';
   }
   return `    <ol class="comment-list">
-${comments.map((comment) => renderCommentNode(comment, postId, principal, 0)).join('\n')}
+${comments.map((comment) => renderCommentNode(comment, postId, 0)).join('\n')}
     </ol>`;
 }
 
-function principalQuery(principal: Principal): string {
-  return `${ACTOR_FIELD}=${encodeURIComponent(principal.actorId)}&${WORKSPACE_FIELD}=${encodeURIComponent(principal.workspaceId)}`;
-}
 
 function renderConversationSection(input: {
   post: PostDTO;
   totalCount: number;
   firstLevelCount: number;
   comments: CommentTreeNode[];
-  principal: Principal;
 }): string {
-  const { post, totalCount, firstLevelCount, comments, principal } = input;
+  const { post, totalCount, firstLevelCount, comments } = input;
   return `  <section class="conversation" aria-live="polite">
     <h2>Comments</h2>
     <p class="counts">${totalCount} total ${totalCount === 1 ? 'comment/reply' : 'comments/replies'}; ${firstLevelCount} first-level ${firstLevelCount === 1 ? 'comment' : 'comments'}.</p>
-${renderCommentComposer(post.id, principal)}
-${renderConversation(comments, post.id, principal)}
+${renderCommentComposer(post.id)}
+${renderConversation(comments, post.id)}
     <p class="conversation-realtime-status" data-realtime-status="idle">Live comment updates stream when this browser supports EventSource.</p>
   </section>`;
 }
 
-function renderPostDetailRealtimeScript(postId: string, principal: Principal): string {
-  const eventUrl = `/events?${principalQuery(principal)}`;
-  const fragmentUrl = `/feed/${encodeURIComponent(postId)}/fragments/conversation?${principalQuery(principal)}`;
+function renderPostDetailRealtimeScript(postId: string): string {
+  const eventUrl = '/events';
+  const fragmentUrl = `/feed/${encodeURIComponent(postId)}/fragments/conversation`;
   const eventTypes = JSON.stringify([
     ACTIVITY_EVENT_TYPES.commentCreated,
     ACTIVITY_EVENT_TYPES.replyCreated,
@@ -397,7 +381,7 @@ ${CODE_BLOCK_CSS}
 </head>
 <body>
   <header class="page-header">
-    <p class="back-link"><a href="/feed?${ACTOR_FIELD}=${encodeURIComponent(principal.actorId)}&amp;${WORKSPACE_FIELD}=${encodeURIComponent(principal.workspaceId)}">← Back to feed</a></p>
+    <p class="back-link"><a href="/feed">← Back to feed</a></p>
     <h1>Conversation</h1>
     <p class="principal">Signed in as <strong>${escapeText(principal.actorId)}</strong> in workspace <strong>${escapeText(principal.workspaceId)}</strong>.</p>
   </header>
@@ -409,10 +393,9 @@ ${renderConversationSection({
     totalCount,
     firstLevelCount,
     comments,
-    principal,
   })}
   <script>
-${renderPostDetailRealtimeScript(post.id, principal)}
+${renderPostDetailRealtimeScript(post.id)}
 ${COPY_CODE_SCRIPT}
 ${PREVIEW_SCRIPT}
   </script>
@@ -432,18 +415,8 @@ function renderErrorDocument(message: string, code: string): string {
 <body>
   <header class="page-header"><h1>Conversation</h1></header>
   <p class="conversation-error" role="alert">${escapeText(message)} (code: ${escapeText(code)})</p>
-  <p>Provide <code>${ACTOR_HEADER_FIELD}</code> / <code>${WORKSPACE_HEADER_FIELD}</code> headers or <code>${ACTOR_FIELD}</code> / <code>${WORKSPACE_FIELD}</code> browser fields.</p>
 </body>
 </html>`;
-}
-
-function readFormParams(form: FormData | null): Record<string, string | undefined> {
-  return {
-    [ACTOR_FIELD]: formField(form, ACTOR_FIELD),
-    [WORKSPACE_FIELD]: formField(form, WORKSPACE_FIELD),
-    [ACTOR_HEADER_FIELD]: formField(form, ACTOR_HEADER_FIELD),
-    [WORKSPACE_HEADER_FIELD]: formField(form, WORKSPACE_HEADER_FIELD),
-  };
 }
 
 function renderCurrentState(input: {
@@ -492,7 +465,6 @@ function renderConversationFragment(input: {
     totalCount: read.comments.totalCount,
     firstLevelCount: read.comments.firstLevelCount,
     comments: thread.comments,
-    principal: input.principal,
   });
 }
 
@@ -519,12 +491,12 @@ function mapConversationError(err: unknown): {
 
 export function postDetailRoutes(deps: PostDetailRouteDeps): Hono {
   const route = new Hono();
-  const { membership, postService, commentService } = deps;
+  const { auth, membership, postService, commentService } = deps;
 
   route.get('/:postId/fragments/conversation', (c) => {
     let principal: Principal;
     try {
-      principal = resolveUiPrincipal(c.req, {}, membership);
+      principal = resolveUiPrincipal(c.req, membership, auth);
       return c.html(
         renderConversationFragment({
           principal,
@@ -542,7 +514,7 @@ export function postDetailRoutes(deps: PostDetailRouteDeps): Hono {
   route.get('/:postId', (c) => {
     let principal: Principal;
     try {
-      principal = resolveUiPrincipal(c.req, {}, membership);
+      principal = resolveUiPrincipal(c.req, membership, auth);
     } catch (err) {
       if (err instanceof AuthorizationError) {
         return c.html(
@@ -577,7 +549,7 @@ export function postDetailRoutes(deps: PostDetailRouteDeps): Hono {
     const content = formField(form, 'content');
     let principal: Principal;
     try {
-      principal = resolveUiPrincipal(c.req, readFormParams(form), membership);
+      principal = resolveUiPrincipal(c.req, membership, auth);
     } catch (err) {
       if (err instanceof AuthorizationError) {
         return c.html(
@@ -639,7 +611,7 @@ export function postDetailRoutes(deps: PostDetailRouteDeps): Hono {
     const content = formField(form, 'content');
     let principal: Principal;
     try {
-      principal = resolveUiPrincipal(c.req, readFormParams(form), membership);
+      principal = resolveUiPrincipal(c.req, membership, auth);
     } catch (err) {
       if (err instanceof AuthorizationError) {
         return c.html(

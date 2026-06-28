@@ -237,14 +237,13 @@ These are recorded here so later chunks do not re-litigate them.
   template text (author id, timestamps, ids) is HTML-escaped via a local
   `escapeText` helper; the C3a-rendered body HTML is inserted as-is because it
   is already the product of the allowlisting renderer.
-- **Principal resolution (C1a reuse):** the UI resolves the principal through
-  the same C1a `membership.resolveMembership` + `membershipToPrincipal` core as
-  the API middleware. Credentials are read from request headers first (API
-  clients), then query parameters on GET and form fields on POST (browsers with
-  no custom-header support). The pair is always validated against the
-  membership table; C9 swaps the extraction, not the validation. The
-  create-post form carries the principal credentials as hidden inputs so it is
-  self-contained.
+- **Principal resolution (C9 current):** the UI resolves the principal through
+  the same C9 session-backed path as the JSON APIs. Browser requests carry the
+  HttpOnly `sttw_session` cookie; API-style callers may send the same session
+  secret as `Authorization: Bearer <session>`. Browser forms no longer carry
+  actor/workspace hidden fields — the selected workspace/group is the one
+  encoded in the active session, and service-layer checks still enforce every
+  per-resource read/write boundary.
 - **States:** empty state when the workspace has no posts; error state when
   principal resolution fails (401/403 error document) or the feed read throws
   (500 with error block); a progressive-enhancement loading indicator toggles
@@ -274,10 +273,11 @@ These are recorded here so later chunks do not re-litigate them.
   stored post/comment/reply content is never emitted by templates; static ids,
   actors, timestamps, counts, and error text use the shared UI `escapeText`
   helper.
-- **Principal resolution:** C5 reuses the C4 shared UI principal path
-  (`resolveUiPrincipal` over headers, query params, or hidden form fields, then
-  C1a membership validation). C9 can replace credential extraction without
-  changing the post detail route or form contracts.
+- **Principal resolution (C9 current):** C5 reuses the C4 shared UI principal
+  path (`resolveUiPrincipal`) over the C9 session cookie / bearer session. The
+  post detail route and form contracts do not accept actor/workspace form
+  fields; the session selects the current workspace/group and the C2/C3 service
+  checks remain the authorization backstop.
 - **Tree presentation:** first-level comments render inline below the post, each
   live comment/reply has its own reply composer, and replies show compact
   "Replying to @actor" context from C3 `replyToActorId`. Nested branches are
@@ -331,8 +331,8 @@ These are recorded here so later chunks do not re-litigate them.
   comment/reply composers) POSTs the textarea value and inserts the response
   into a preview pane. The preview is always produced by the same sanitizing
   renderer as live content, so it can never introduce unsanitized markup.
-  Principal resolution is required to keep the surface consistent with the C1a
-  authorization baseline.
+  Principal resolution uses the same C9 session-backed gate as the live
+  feed/conversation routes, even though preview touches no stored data.
 - **Shared UI assets:** the code-block CSS, copy script, and preview script
   live in `src/ui/codeBlockUi.ts` as static strings interpolated into the C4
   feed and C5 post-detail documents, avoiding duplication. They contain no user
@@ -354,33 +354,33 @@ These are recorded here so later chunks do not re-litigate them.
   credential random salt, format `saltHex$hashHex`) in `agent_credential`. The
   plaintext secret is NEVER persisted; it is returned exactly once at issuance
   and rotation and is never retrievable again. Verification scans active
-  credentials and compares in constant time (`timingSafeEqual`). A credential
-  is workspace-scoped via the actor's workspace (composite FK to
-  `actor(workspace_id, id)`), so a credential cannot reference an actor in
-  another workspace.
-- **Credential lifecycle:** issuance creates a new active credential row and
-  returns the one-time secret. Rotation issues a new credential and revokes all
-  prior active credentials for the actor (old secret rejected on subsequent
-  verify). Revocation flips `status` to 'revoked' (single credential or all
-  active credentials for an actor). Only hashed material is retained.
+  credentials and compares in constant time (`timingSafeEqual`). C9 scopes a
+  credential to the credential workspace/group, not just the actor's home
+  workspace; migration 0004 guards issuance with triggers requiring the actor to
+  be an agent and an active member of that workspace.
+- **Credential lifecycle:** issuance creates a new active credential row for
+  the current agent/workspace scope and returns the one-time secret. Rotation
+  issues a new credential and revokes prior active credentials for that same
+  actor/workspace scope (old secret rejected on subsequent verify). Revocation
+  flips `status` to 'revoked' (single credential, all active credentials for an
+  actor, or the current workspace-scoped set through the API). Only hashed
+  material is retained.
 - **Principal resolution (agent):** `resolveAgentPrincipal` maps an
   `Authorization: Bearer <secret>` header to a `Principal` by verifying the
-  secret against the hashed credential table and resolving the actor's
-  membership. This produces the same C1a `Principal` shape as the stubbed
-  header resolver, so the shared C1a authorization middleware and per-resource
-  `assertCanRead`/`assertCanWrite` checks apply unchanged to agent callers. C9
-  replaces credential verification with real sign-in-backed tokens while
-  keeping the Principal shape.
+  secret against the hashed credential table and resolving the actor's active
+  membership in the credential workspace. This produces the same `Principal`
+  shape as C9 human sessions, so shared authorization helpers and per-resource
+  `assertCanRead`/`assertCanWrite` checks apply unchanged to agent callers.
 - **Audit logging:** every agent create-post/comment/reply action appends a
   row to `agent_audit_log` (actor, workspace, action, target id, root post id,
   idempotency key, timestamp). The log is append-only and read by the agent's
   own audit endpoint and later admin tooling (C9+).
-- **Rate limit / quota:** a per-(actor, bucket) counter in `agent_quota_state`
-  enforces a rolling-window write quota. The bucket key encodes the window
-  (default per-minute). `checkAndConsume` atomically increments only when under
-  the limit; excess writes throw `QuotaExceededError` (mapped to 429) BEFORE the
-  write occurs, so no duplicate write and no extra feed bump is created when the
-  limit is exceeded.
+- **Rate limit / quota:** `agent_quota_state` stores a timestamped write event
+  log. `checkAndConsume` counts events in the trailing configured window and
+  inserts the new event inside one transaction, so the limit is a true rolling
+  window rather than a fixed wall-clock bucket. Excess writes throw
+  `QuotaExceededError` (mapped to 429) BEFORE the write occurs, so no duplicate
+  write and no extra feed bump is created when the limit is exceeded.
 - **Idempotency:** agent writes accept an `x-idempotency-key` header. The key
   is scoped per (actor, action) and stored in `agent_idempotency_key` with the
   resulting target id and a SHA-256 request digest. A replayed write with the
@@ -440,12 +440,13 @@ These are recorded here so later chunks do not re-litigate them.
   services, but a non-replayed agent create/reply emits the same event as a
   human write; idempotency replays do not call the write service and therefore
   do not emit duplicate events.
-- **Authorization/filtering:** the SSE route resolves the C1a principal from
-  the standard stubbed headers; browser `EventSource` may pass the same actor /
-  workspace values as query params because it cannot set custom headers. The
-  route enforces the C1a read role before subscribing, and `ActivityEventHub`
-  applies the shared workspace-scope filter before delivering each event. A
-  workspace B write is never enqueued to a workspace A subscriber.
+- **Authorization/filtering:** the SSE route resolves the C9 principal from the
+  same session cookie / bearer session as the human API/UI routes. Browser
+  `EventSource` carries the HttpOnly session cookie automatically, so no actor
+  or workspace query parameters are accepted. The route enforces read scope
+  before subscribing, and `ActivityEventHub` applies the shared workspace-scope
+  filter before delivering each event. A workspace B write is never enqueued to
+  a workspace A subscriber.
 - **UI consumers:** feed pages listen for all known C8 event types, fetch the
   scoped card fragment for the root post, remove any existing card, and
   `prepend` the fresh server-rendered card so background comments/replies move
@@ -459,3 +460,50 @@ These are recorded here so later chunks do not re-litigate them.
   no durable state, rollback is disabling the SSE route/script or reverting the
   service publisher wiring; the existing C2/C3/C4/C5 read paths remain the
   source of truth.
+
+## C9 decisions (auth, workspace boundaries, collaboration base)
+
+These are recorded here so C10 hardening does not re-litigate the auth model.
+
+- **Local auth model:** C9 uses boring local email/password identities for
+  human actors (`auth_identity`) plus opaque server-side sessions
+  (`auth_session`). Passwords are scrypt-hashed with per-identity salt; session
+  secrets are generated once, stored only as SHA-256 hashes, and sent to
+  browsers as HttpOnly SameSite=Lax `sttw_session` cookies. OAuth/SSO and public
+  self-registration are out of scope for C9.
+- **Session-backed principal resolution:** protected human app/API routes no
+  longer accept the C1a `x-actor-id` / `x-workspace-id` stub. `resolvePrincipal`
+  extracts a C9 session from the cookie or `Authorization: Bearer <session>`,
+  resolves the active `(workspace_id, actor_id)` membership, and emits the same
+  `Principal` shape existing C2/C3/C8 services consume.
+- **Membership lifecycle:** migration 0004 extends `workspace_member` with
+  `status` (`invited`, `active`, `suspended`), inviter metadata, and acceptance
+  timestamps. `workspace_invite` records pending/accepted/revoked email invites;
+  `workspace_share` records active/revoked cross-workspace actor shares. Invites
+  cannot downgrade an already-active member, revoked invites cannot later grant
+  access, and revoking a share restores an accepted invite's role before deleting
+  cross-workspace membership. The home-workspace membership trigger remains to
+  preserve C1-C8 local actor behavior and keep existing data accessible; cross-
+  workspace access is explicit through invite/share lifecycle rows.
+- **Workspace/group boundaries:** the existing `workspace.id` remains the MVP
+  group/channel boundary. A session is scoped to exactly one active membership;
+  feed, comment, UI, event, and agent service calls continue to run
+  `assertCanRead` / `assertCanWrite` against resource workspace ids before
+  returning or mutating content.
+- **Shared authorship data model:** migration 0004 rebuilds `post` and
+  `comment_node` without the old author-home-workspace composite FK, because an
+  invited/shared actor may author content in a workspace different from its
+  home workspace. Root-post and parent-comment workspace consistency triggers
+  remain in place; membership authorization now owns whether a non-home author
+  may write in that workspace.
+- **Agent credential scope inheritance:** agent Bearer credentials remain the
+  machine auth path. C9 scopes each credential to the credential workspace and
+  requires the agent actor to be an active member there; verifying the secret
+  resolves the Principal from that workspace membership, so agent feed/status
+  reads and writes inherit the correct workspace/group role.
+- **Migration and rollback:** migration 0004 backfills every pre-C9
+  `workspace_member` row as active, preserves existing posts/comments, adds auth
+  and invite/share tables, and rebuilds C7 agent-control-plane tables so shared
+  workspace scopes are representable. Rollback drops C9-only auth/invite/share
+  tables and restores pre-C9 author-home FKs, copying back only rows compatible
+  with the older schema.

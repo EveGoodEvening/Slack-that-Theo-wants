@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { DomainRepository } from '../domain/repositories.js';
 import type { MembershipRepository } from '../security/membership.js';
+import type { AuthRepository } from '../security/auth.js';
 import {
   authMiddleware,
   installAuthorizationErrorHandler,
@@ -18,14 +19,14 @@ import {
 /**
  * C2 post feed HTTP surface.
  *
- * Mounts three endpoints under /posts, all routed through the C1a shared
+ * Mounts three endpoints under /posts, all routed through the C9 shared
  * authorization middleware:
  * - POST   /posts        create a post (write role)
  * - GET    /posts        list the feed (read role), cursor-paginated
  * - GET    /posts/:id    read a post + comment-tree metadata (read role)
  *
- * Every endpoint resolves the principal via the C1a middleware and delegates to
- * the PostService, which enforces the workspace/group boundary before any
+ * Every endpoint resolves the principal from a sign-in session and delegates
+ * to the PostService, which enforces the workspace/group boundary before any
  * ordering/pagination/metadata read. AuthorizationError is mapped by the shared
  * C1a error handler; PostNotFoundError is mapped here to a 404.
  */
@@ -33,7 +34,7 @@ import {
 export interface PostRouteDeps {
   repository: DomainRepository;
   membership: MembershipRepository;
-  /** Optional service override; defaults to PostServiceImpl over the repo. */
+  auth: AuthRepository;
   service?: PostService;
 }
 
@@ -45,11 +46,11 @@ export function postRoutes(deps: PostRouteDeps): Hono<{
 
   const service = deps.service ?? new PostServiceImpl(deps.repository);
 
-  // Base auth on every route: resolves + stores the principal.
-  route.use('*', authMiddleware(deps.membership));
+  // Base auth on every route: resolves + stores the session-backed principal.
+  route.use('*', authMiddleware(deps.membership, deps.auth));
 
   // Create post — write role baseline.
-  route.post('/', requireRole(deps.membership, 'write'), async (c) => {
+  route.post('/', requireRole(deps.membership, 'write', deps.auth), async (c) => {
     const principal = c.get('principal');
     const body = (await c.req.json().catch(() => null)) as
       | { content?: unknown }
@@ -68,7 +69,7 @@ export function postRoutes(deps: PostRouteDeps): Hono<{
   });
 
   // List feed — read role baseline.
-  route.get('/', requireRole(deps.membership, 'read'), (c) => {
+  route.get('/', requireRole(deps.membership, 'read', deps.auth), (c) => {
     const principal = c.get('principal');
     const limitParam = c.req.query('limit');
     const cursorRaw = c.req.query('cursor');
@@ -106,7 +107,7 @@ export function postRoutes(deps: PostRouteDeps): Hono<{
   });
 
   // Read post — read role baseline.
-  route.get('/:id', requireRole(deps.membership, 'read'), (c) => {
+  route.get('/:id', requireRole(deps.membership, 'read', deps.auth), (c) => {
     const principal = c.get('principal');
     const id = c.req.param('id');
     try {

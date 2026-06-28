@@ -1,15 +1,37 @@
-// C1a security baseline: principal, membership, authorization middleware.
+// Shared security: C1a authorization contracts plus C9 auth/collaboration primitives.
 
 export { MembershipRepository } from './membership.js';
-export type { MembershipRow, ResolvedMembership } from './membership.js';
+export type {
+  InviteStatus,
+  MembershipRow,
+  MembershipStatus,
+  ResolvedMembership,
+  ShareStatus,
+  WorkspaceInviteRow,
+  WorkspaceShareRow,
+} from './membership.js';
 
 export {
   membershipToPrincipal,
-  PRINCIPAL_HEADERS,
   resolvePrincipal,
 } from './principal.js';
 export type { PrincipalRequest } from './principal.js';
 
+
+export {
+  AuthenticationError,
+  AuthRepository,
+  clearSessionCookie,
+  generateSessionSecret,
+  hashPassword,
+  hashSessionSecret,
+  SESSION_COOKIE_NAME,
+  SESSION_TOKEN_SCHEME,
+  sessionCookie,
+  sessionSecretFromRequest,
+  verifyPassword,
+} from './auth.js';
+export type { AuthIdentityRow, AuthSessionRow, IssuedSession } from './auth.js';
 export {
   assertCanRead,
   assertCanWrite,

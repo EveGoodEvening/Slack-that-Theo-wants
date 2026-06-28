@@ -1,6 +1,7 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { ActivityEventHub, type ActivityEventSource } from './api/activityEvents.js';
+import { authRoutes } from './api/authRoutes.js';
 import { activityRoutes } from './api/activityRoutes.js';
 import { agentRoutes } from './api/agentRoutes.js';
 import { CommentServiceImpl } from './api/commentService.js';
@@ -13,6 +14,7 @@ import { DomainRepository } from './domain/repositories.js';
 import { migrateUp, migrations, openDatabase } from './db/index.js';
 import { healthRoute } from './health.js';
 import { MembershipRepository } from './security/membership.js';
+import { AuthRepository } from './security/auth.js';
 
 /**
  * Dependencies required to mount the C2 post feed API and later surfaces. Omit
@@ -21,6 +23,7 @@ import { MembershipRepository } from './security/membership.js';
 export interface AppDeps {
   repository: DomainRepository;
   membership: MembershipRepository;
+  auth: AuthRepository;
   /** The underlying database connection, used when mounting C7 agent routes. */
   db?: import('./db/connection.js').BetterSqliteDatabase;
   /** Shared in-process C8 event source; tests may inject one. */
@@ -39,7 +42,11 @@ export function createApp(deps?: AppDeps): Hono {
     const postService = new PostServiceImpl(deps.repository, activity);
     const commentService = new CommentServiceImpl(deps.repository, activity);
 
-    app.route('/events', activityRoutes({ membership: deps.membership, events: activity }));
+    app.route('/auth', authRoutes({ auth: deps.auth }));
+    app.route(
+      '/events',
+      activityRoutes({ auth: deps.auth, membership: deps.membership, events: activity }),
+    );
     app.route('/posts', postRoutes({ ...deps, service: postService }));
     // C3 comment/reply surface. Mounted at root because it spans /posts/.../comments
     // and /comments/.../replies prefixes; the route file owns the full paths.
@@ -48,12 +55,13 @@ export function createApp(deps?: AppDeps): Hono {
     // the C2 post service, C3 comment service, and C3a safe renderer.
     app.route(
       '/feed',
-      feedRoutes({ membership: deps.membership, service: postService }),
+      feedRoutes({ auth: deps.auth, membership: deps.membership, service: postService }),
     );
     app.route(
       '/feed',
       postDetailRoutes({
         membership: deps.membership,
+        auth: deps.auth,
         postService,
         commentService,
       }),
@@ -84,6 +92,7 @@ export function createApp(deps?: AppDeps): Hono {
       posts: deps ? '/posts' : undefined,
       comments: deps ? '/comments' : undefined,
       feed: deps ? '/feed' : undefined,
+      auth: deps ? '/auth/signin' : undefined,
       events: deps ? '/events' : undefined,
       agents: deps?.db !== undefined ? '/agents' : undefined,
     }),
@@ -99,6 +108,7 @@ function buildDeps(): AppDeps | undefined {
     return {
       repository: new DomainRepository(db),
       membership: new MembershipRepository(db),
+      auth: new AuthRepository(db),
       db,
     };
   } catch (err) {

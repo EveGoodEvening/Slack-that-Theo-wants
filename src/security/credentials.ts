@@ -9,11 +9,10 @@ import type { BetterSqliteDatabase } from '../db/connection.js';
  * persisted. The plaintext is returned exactly once at issuance / rotation and
  * is never retrievable again.
  *
- * A credential is scoped to a single workspace through the actor's workspace
- * (enforced by the migration's composite FK). Rotation issues a new credential
- * and revokes the old one; revocation flips `status` to 'revoked'. Verify
- * looks up the active credential by hash in constant time and resolves to the
- * agent actor + workspace for principal resolution.
+ * A credential is scoped to one workspace/group, and C9 validates that the
+ * agent actor has an active membership in that workspace. Verification resolves
+ * to the credential workspace, so the Principal inherits the current membership
+ * role for that group.
  *
  * This module owns ONLY credential storage and verification. Principal
  * resolution from a verified credential is in `agentPrincipal.ts`; the audit /
@@ -103,10 +102,9 @@ export class AgentCredentialRepository {
   constructor(private readonly db: BetterSqliteDatabase) {}
 
   /**
-   * Issue a new credential for an agent actor. The plaintext secret is
-   * returned exactly once and is never persisted. The stored row contains only
-   * the hash. Throws if the actor is not an agent or does not belong to the
-   * given workspace (the composite FK also enforces this at the data layer).
+   * Issue a new credential for an agent actor in a workspace/group. C9 schema
+   * constraints require the actor to be an agent and an active member of that
+   * workspace; the resolved Principal later inherits the membership role.
    */
   issue(input: {
     actorId: string;
@@ -164,7 +162,18 @@ export class AgentCredentialRepository {
       .run(new Date().toISOString(), credentialId).changes;
   }
 
-  /** Revoke every active credential for an actor. Returns the count revoked. */
+  /** Revoke every active credential for an actor in one workspace. Returns the count revoked. */
+  revokeAllForActorInWorkspace(actorId: string, workspaceId: string): number {
+    return this.db
+      .prepare(
+        `UPDATE agent_credential
+         SET status = 'revoked', revoked_at = ?
+         WHERE actor_id = ? AND workspace_id = ? AND status = 'active'`,
+      )
+      .run(new Date().toISOString(), actorId, workspaceId).changes;
+  }
+
+  /** Revoke every active credential for an actor across all workspaces. */
   revokeAllForActor(actorId: string): number {
     return this.db
       .prepare(

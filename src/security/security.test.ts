@@ -9,44 +9,49 @@ import {
   type BetterSqliteDatabase,
 } from '../db/index.js';
 import { DomainRepository } from '../domain/index.js';
+import { authRoutes } from '../api/authRoutes.js';
 import {
   assertCanRead,
   assertCanWrite,
   AuthorizationError,
+  AuthRepository,
   authMiddleware,
   authorizeWriteBatch,
   filterByScope,
   hasRole,
   MembershipRepository,
   installAuthorizationErrorHandler,
-  PRINCIPAL_HEADERS,
   principalScope,
   readableByScope,
   requireRole,
   resolvePrincipal,
+  SESSION_COOKIE_NAME,
+  sessionCookie,
   workspaceScopePredicate,
   type Principal,
   type PrincipalRequest,
 } from './index.js';
 
 /**
- * C1a security baseline tests.
+ * Shared security tests for the C1a authorization contract after the C9
+ * session-backed principal replacement.
  *
- * Directly exercises the middleware/helper contracts required by the C1a
- * "Required verification":
+ * Directly exercises the middleware/helper contracts required by C1a and C9:
  * - a principal cannot read or write outside its workspace/group through the
  *   shared middleware
  * - workspace/group scope filters include authorized records and exclude
- *   unauthorized records for human AND stubbed-agent principals
+ *   unauthorized records for human and agent principals
+ * - C9 sessions replace the old header-only principal stub on protected paths
  *
- * These tests do not depend on C2 feed APIs or C8 event streams: they build
- * synthetic record collections and a tiny Hono app that mounts only the C1a
- * middleware, proving the authorization contract in isolation.
+ * These tests do not depend on C8 event streams: they build synthetic record
+ * collections and tiny Hono apps that mount only the security routes needed for
+ * each contract.
  */
 
 let db: BetterSqliteDatabase;
 let domain: DomainRepository;
 let membership: MembershipRepository;
+let auth: AuthRepository;
 
 beforeAll(() => {
   db = openDatabase(':memory:');
@@ -65,6 +70,7 @@ beforeEach(() => {
   migrateUp(db, migrations);
   domain = new DomainRepository(db);
   membership = new MembershipRepository(db);
+  auth = new AuthRepository(db);
 });
 
 /**
@@ -121,21 +127,19 @@ function records(): ScopedRecord[] {
 }
 
 function headersFor(actorId: string, workspaceId: string): Record<string, string> {
-  return {
-    [PRINCIPAL_HEADERS.actorId]: actorId,
-    [PRINCIPAL_HEADERS.workspaceId]: workspaceId,
-  };
+  const session = auth.createSession({ actorId, workspaceId });
+  return { cookie: sessionCookie(session.secret) };
 }
 
-/** Build a PrincipalRequest carrying the stubbed auth headers. */
+/** Build a PrincipalRequest carrying a sign-in session cookie. */
 function reqFor(actorId: string, workspaceId: string): PrincipalRequest {
   const headers: Record<string, string> = headersFor(actorId, workspaceId);
-  return { header: (name: string) => headers[name] };
+  return { header: (name: string) => headers[name.toLowerCase()] ?? headers[name] };
 }
 
 /** Resolve a principal via the real resolver (exercises membership + kind). */
 function principalFor(actorId: string, workspaceId: string): Principal {
-  return resolvePrincipal(reqFor(actorId, workspaceId), membership);
+  return resolvePrincipal(reqFor(actorId, workspaceId), membership, auth);
 }
 
 /** Build a Hono app with the shared authorization error mapper installed. */
@@ -149,12 +153,12 @@ function securityApp(): Hono<{ Variables: { principal: Principal } }> {
 // Principal resolution
 // ---------------------------------------------------------------------------
 
-describe('C1a principal resolution (stubbed)', () => {
-  it('resolves a human principal from stubbed auth headers', async () => {
+describe('C9 principal resolution (session-backed)', () => {
+  it('resolves a human principal from a sign-in session cookie', async () => {
     const { humanA, wsA } = twoWorkspaceFixture();
     let captured: Principal | undefined;
     const app = securityApp();
-    app.use('*', authMiddleware(membership));
+    app.use('*', authMiddleware(membership, auth));
     app.get('/who', (c) => {
       captured = c.get('principal');
       return c.json({ ok: true });
@@ -179,10 +183,10 @@ describe('C1a principal resolution (stubbed)', () => {
     expect(p.role).toBe('write');
   });
 
-  it('rejects a request missing principal headers with 401 missing_principal', async () => {
+  it('rejects a request missing a sign-in session with 401 missing_principal', async () => {
     twoWorkspaceFixture();
     const app = securityApp();
-    app.use('*', authMiddleware(membership));
+    app.use('*', authMiddleware(membership, auth));
     app.get('/who', (c) => c.json({ ok: true }));
 
     const res = await app.request('/who');
@@ -191,29 +195,79 @@ describe('C1a principal resolution (stubbed)', () => {
     expect(body.code).toBe('missing_principal');
   });
 
-  it('rejects an unknown actor with 401 principal_not_found', async () => {
-    const { wsA } = twoWorkspaceFixture();
+  it('rejects an unknown session with 401 principal_not_found', async () => {
+    twoWorkspaceFixture();
     const app = securityApp();
-    app.use('*', authMiddleware(membership));
+    app.use('*', authMiddleware(membership, auth));
     app.get('/who', (c) => c.json({ ok: true }));
 
-    const res = await app.request('/who', { headers: headersFor('ghost', wsA.id) });
+    const res = await app.request('/who', { headers: { cookie: sessionCookie('sttw_session_unknown') } });
     expect(res.status).toBe(401);
     const body = (await res.json()) as { code: string };
     expect(body.code).toBe('principal_not_found');
   });
 
-  it('rejects an actor that is not a member of the requested workspace with 401', async () => {
-    const { humanA, wsB } = twoWorkspaceFixture();
+  it('rejects a session whose membership is no longer active with 401', async () => {
+    const { humanA, wsA } = twoWorkspaceFixture();
+    const headers = headersFor(humanA.id, wsA.id);
+    membership.suspendMembership(wsA.id, humanA.id);
     const app = securityApp();
-    app.use('*', authMiddleware(membership));
+    app.use('*', authMiddleware(membership, auth));
     app.get('/who', (c) => c.json({ ok: true }));
 
-    // humanA belongs to wsA; claiming wsB must fail at resolution time.
-    const res = await app.request('/who', { headers: headersFor(humanA.id, wsB.id) });
+    const res = await app.request('/who', { headers });
     expect(res.status).toBe(401);
     const body = (await res.json()) as { code: string };
     expect(body.code).toBe('principal_not_found');
+  });
+
+  it('does not accept legacy x-actor-id / x-workspace-id headers without a session', async () => {
+    const { humanA, wsA } = twoWorkspaceFixture();
+    const app = securityApp();
+    app.use('*', authMiddleware(membership, auth));
+    app.get('/who', (c) => c.json({ ok: true }));
+
+    const res = await app.request('/who', {
+      headers: { 'x-actor-id': humanA.id, 'x-workspace-id': wsA.id },
+    });
+
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { code: string };
+    expect(body.code).toBe('missing_principal');
+  });
+
+  it('issues a session cookie through the sign-in route', async () => {
+    const { humanA, wsA } = twoWorkspaceFixture();
+    auth.createIdentity({
+      actorId: humanA.id,
+      email: 'ada@example.com',
+      password: 'correct horse battery staple',
+    });
+    const app = new Hono();
+    app.route('/auth', authRoutes({ auth }));
+    const form = new URLSearchParams();
+    form.set('email', 'ADA@example.com');
+    form.set('password', 'correct horse battery staple');
+    form.set('workspaceId', wsA.id);
+
+    const res = await app.request('/auth/signin', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: form.toString(),
+    });
+
+    expect(res.status).toBe(303);
+    expect(res.headers.get('location')).toBe('/feed');
+    const cookie = res.headers.get('set-cookie') ?? '';
+    expect(cookie).toContain(`${SESSION_COOKIE_NAME}=`);
+    expect(cookie).toContain('HttpOnly');
+    const principal = resolvePrincipal(
+      { header: (name) => (name === 'cookie' ? cookie : undefined) },
+      membership,
+      auth,
+    );
+    expect(principal.actorId).toBe(humanA.id);
+    expect(principal.workspaceId).toBe(wsA.id);
   });
 });
 
@@ -230,7 +284,7 @@ describe('C1a cross-workspace isolation via middleware', () => {
    */
   function guardedApp() {
     const app = securityApp();
-    app.use('*', authMiddleware(membership));
+    app.use('*', authMiddleware(membership, auth));
     app.get('/ws/:workspaceId/read', (c) => {
       const p = c.get('principal');
       assertCanRead(p, c.req.param('workspaceId'));
@@ -273,7 +327,7 @@ describe('C1a cross-workspace isolation via middleware', () => {
     expect(body.code).toBe('workspace_mismatch');
   });
 
-  it('rejects a stubbed-agent principal reading another workspace', async () => {
+  it('rejects a session-backed agent principal reading another workspace', async () => {
     const { agentA, wsB } = twoWorkspaceFixture();
     const res = await guardedApp().request(`/ws/${wsB.id}/read`, {
       headers: headersFor(agentA.id, 'wsA'),
@@ -283,7 +337,7 @@ describe('C1a cross-workspace isolation via middleware', () => {
     expect(body.code).toBe('workspace_mismatch');
   });
 
-  it('rejects a stubbed-agent principal writing another workspace', async () => {
+  it('rejects a session-backed agent principal writing another workspace', async () => {
     const { agentA, wsB } = twoWorkspaceFixture();
     const res = await guardedApp().request(`/ws/${wsB.id}/write`, {
       method: 'POST',
@@ -294,7 +348,7 @@ describe('C1a cross-workspace isolation via middleware', () => {
     expect(body.code).toBe('workspace_mismatch');
   });
 
-  it('allows a stubbed-agent principal to read and write its own workspace', async () => {
+  it('allows a session-backed agent principal to read and write its own workspace', async () => {
     const { agentA, wsA } = twoWorkspaceFixture();
     const app = guardedApp();
     const read = await app.request(`/ws/${wsA.id}/read`, {
@@ -320,7 +374,7 @@ describe('C1a role enforcement', () => {
     membership.setMembership(wsA.id, humanA.id, 'read');
 
     const app = securityApp();
-    app.use('*', authMiddleware(membership));
+    app.use('*', authMiddleware(membership, auth));
     app.get('/ws/:workspaceId/read', (c) => {
       assertCanRead(c.get('principal'), c.req.param('workspaceId'));
       return c.json({ ok: true });
@@ -349,7 +403,7 @@ describe('C1a role enforcement', () => {
     membership.setMembership(wsA.id, humanA.id, 'read');
 
     const app = securityApp();
-    app.use('/admin/*', requireRole(membership, 'write'));
+    app.use('/admin/*', requireRole(membership, 'write', auth));
     app.post('/admin/thing', (c) => c.json({ ok: true }));
 
     const res = await app.request('/admin/thing', {
@@ -366,7 +420,7 @@ describe('C1a role enforcement', () => {
     membership.setMembership(wsA.id, humanA.id, 'read');
 
     const app = securityApp();
-    app.use('/editor/*', requireRole(membership, 'read'));
+    app.use('/editor/*', requireRole(membership, 'read', auth));
     app.post('/editor/:workspaceId', (c) => {
       assertCanWrite(c.get('principal'), c.req.param('workspaceId'));
       return c.json({ ok: true });
@@ -384,7 +438,7 @@ describe('C1a role enforcement', () => {
   it('does not hide downstream non-authorization errors', async () => {
     const { humanA, wsA } = twoWorkspaceFixture();
     const app = securityApp();
-    app.use('/editor/*', requireRole(membership, 'read'));
+    app.use('/editor/*', requireRole(membership, 'read', auth));
     app.get('/editor/boom', () => {
       throw new Error('unexpected route failure');
     });
@@ -416,7 +470,7 @@ describe('C1a role enforcement', () => {
 
 // ---------------------------------------------------------------------------
 // Scope/filter helpers — include authorized, exclude unauthorized, for human
-// and stubbed-agent principals
+// and session-backed agent principals
 // ---------------------------------------------------------------------------
 
 describe('C1a scope/filter helpers', () => {
@@ -455,13 +509,13 @@ describe('C1a scope/filter helpers', () => {
     expect(filtered.some((r) => r.workspaceId === 'wsB')).toBe(false);
   });
 
-  it('filterByScope includes only records in the stubbed-agent principal workspace', () => {
+  it('filterByScope includes only records in the session-backed agent principal workspace', () => {
     const { agentA } = principals();
     const filtered = filterByScope(agentA, records(), (r) => r.workspaceId);
     expect(filtered.map((r) => r.id).sort()).toEqual(['r1', 'r3']);
   });
 
-  it('filterByScope excludes records from other workspaces for a stubbed-agent principal', () => {
+  it('filterByScope excludes records from other workspaces for a session-backed agent principal', () => {
     const { agentB } = principals();
     const filtered = filterByScope(agentB, records(), (r) => r.workspaceId);
     expect(filtered.map((r) => r.id).sort()).toEqual(['r2', 'r4']);
@@ -563,12 +617,237 @@ describe('C1a baseline membership model', () => {
 });
 
 // ---------------------------------------------------------------------------
+// C9 local auth + membership lifecycle
+// ---------------------------------------------------------------------------
+
+describe('C9 local auth and collaboration membership', () => {
+  it('authenticates a human identity and resolves a session principal', () => {
+    const { humanA, wsA } = twoWorkspaceFixture();
+    auth.createIdentity({
+      actorId: humanA.id,
+      email: 'ada@example.com',
+      password: 'correct horse battery staple',
+    });
+
+    const session = auth.authenticate({
+      email: 'ADA@example.com',
+      password: 'correct horse battery staple',
+      workspaceId: wsA.id,
+    });
+    const principal = resolvePrincipal(
+      { header: (name) => (name === 'cookie' ? sessionCookie(session.secret) : undefined) },
+      membership,
+      auth,
+    );
+
+    expect(principal).toEqual({
+      actorId: humanA.id,
+      workspaceId: wsA.id,
+      kind: 'human',
+      role: 'write',
+    });
+  });
+
+  it('rejects identities for agent actors', () => {
+    const { agentA } = twoWorkspaceFixture();
+    expect(() =>
+      auth.createIdentity({
+        actorId: agentA.id,
+        email: 'agent@example.com',
+        password: 'not-for-agents',
+      }),
+    ).toThrow();
+  });
+
+  it('keeps invited memberships inactive until accepted', () => {
+    const { wsA, humanA, humanB } = twoWorkspaceFixture();
+    const invited = membership.inviteMember({
+      workspaceId: wsA.id,
+      actorId: humanB.id,
+      role: 'read',
+      invitedByActorId: humanA.id,
+    });
+
+    expect(invited.status).toBe('invited');
+    expect(membership.resolveMembership(wsA.id, humanB.id)).toBeUndefined();
+
+    const accepted = membership.acceptMembership(wsA.id, humanB.id);
+    expect(accepted.status).toBe('active');
+    expect(membership.resolveMembership(wsA.id, humanB.id)?.role).toBe('read');
+  });
+
+  it('does not downgrade an active membership back to invited', () => {
+    const { wsA, humanA } = twoWorkspaceFixture();
+    const invited = membership.inviteMember({
+      workspaceId: wsA.id,
+      actorId: humanA.id,
+      role: 'read',
+      invitedByActorId: humanA.id,
+    });
+
+    expect(invited.status).toBe('active');
+    expect(membership.resolveMembership(wsA.id, humanA.id)?.role).toBe('write');
+  });
+
+  it('accepting an invite creates active membership for the invited actor', () => {
+    const { wsA, humanA, humanB } = twoWorkspaceFixture();
+    const invite = membership.createInvite({
+      workspaceId: wsA.id,
+      email: 'bo@example.com',
+      role: 'write',
+      invitedByActorId: humanA.id,
+    });
+
+    const accepted = membership.acceptInvite(invite.id, humanB.id);
+
+    expect(accepted.status).toBe('accepted');
+    expect(accepted.acceptedByActorId).toBe(humanB.id);
+    expect(membership.resolveMembership(wsA.id, humanB.id)?.role).toBe('write');
+  });
+
+  it('does not accept a revoked invite', () => {
+    const { wsA, humanA, humanB } = twoWorkspaceFixture();
+    const invite = membership.createInvite({
+      workspaceId: wsA.id,
+      email: 'revoked@example.com',
+      role: 'read',
+      invitedByActorId: humanA.id,
+    });
+
+    membership.revokeInvite(invite.id);
+
+    expect(() => membership.acceptInvite(invite.id, humanB.id)).toThrow(/not pending/);
+    expect(membership.resolveMembership(wsA.id, humanB.id)).toBeUndefined();
+  });
+
+  it('workspace shares grant and revoke cross-workspace membership', () => {
+    const { wsA, wsB, humanA, humanB } = twoWorkspaceFixture();
+    const share = membership.createShare({
+      workspaceId: wsB.id,
+      actorId: humanA.id,
+      role: 'write',
+      sharedByActorId: humanB.id,
+    });
+
+    expect(share.status).toBe('active');
+    expect(membership.resolveMembership(wsB.id, humanA.id)?.role).toBe('write');
+    expect(membership.listMembershipsForActor(humanA.id).map((m) => m.workspaceId).sort()).toEqual([
+      wsA.id,
+      wsB.id,
+    ]);
+
+    const revoked = membership.revokeShare(share.id);
+    expect(revoked.status).toBe('revoked');
+    expect(membership.resolveMembership(wsB.id, humanA.id)).toBeUndefined();
+  });
+
+  it('revoking a share restores an accepted invite role instead of deleting membership', () => {
+    const { wsB, humanA, humanB } = twoWorkspaceFixture();
+    const invite = membership.createInvite({
+      workspaceId: wsB.id,
+      email: 'ada@example.com',
+      role: 'read',
+      invitedByActorId: humanB.id,
+    });
+    membership.acceptInvite(invite.id, humanA.id);
+    const share = membership.createShare({
+      workspaceId: wsB.id,
+      actorId: humanA.id,
+      role: 'write',
+      sharedByActorId: humanB.id,
+    });
+    expect(membership.resolveMembership(wsB.id, humanA.id)?.role).toBe('write');
+
+    membership.revokeShare(share.id);
+
+    const restored = membership.resolveMembership(wsB.id, humanA.id);
+    expect(restored?.role).toBe('read');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Migration 0004 apply / pre-C9 preservation / rollback
+// ---------------------------------------------------------------------------
+
+describe('C9 auth/collaboration migration', () => {
+  it('applies C9 auth/collaboration tables on a fresh database', () => {
+    expect(appliedMigrations(db)).toEqual([1, 2, 3, 4]);
+    const tables = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+      .all() as { name: string }[];
+    const names = tables.map((t) => t.name);
+    expect(names).toContain('auth_identity');
+    expect(names).toContain('auth_session');
+    expect(names).toContain('workspace_invite');
+    expect(names).toContain('workspace_share');
+    const memberColumns = db
+      .prepare('PRAGMA table_info(workspace_member)')
+      .all() as { name: string }[];
+    expect(memberColumns.map((c) => c.name)).toEqual(
+      expect.arrayContaining(['status', 'invited_by_actor_id', 'accepted_at']),
+    );
+  });
+
+  it('migrates from pre-C9 data without losing existing workspace content or memberships', () => {
+    migrateDown(db, migrations, 4);
+    expect(appliedMigrations(db)).toEqual([1, 2, 3]);
+
+    const preRepo = new DomainRepository(db);
+    preRepo.createWorkspace({ id: 'preWs', slug: 'pre', name: 'Pre C9' });
+    preRepo.createActor({ id: 'preHuman', workspaceId: 'preWs', kind: 'human', displayName: 'Pre Human' });
+    preRepo.createPost({
+      id: 'prePost',
+      workspaceId: 'preWs',
+      authorActorId: 'preHuman',
+      content: 'pre-C9 post',
+      lastActivityAt: '2026-01-01T00:00:00.000Z',
+    });
+    preRepo.createComment({
+      id: 'preComment',
+      workspaceId: 'preWs',
+      rootPostId: 'prePost',
+      authorActorId: 'preHuman',
+      content: 'pre-C9 comment',
+      createdAt: '2026-01-02T00:00:00.000Z',
+    });
+
+    migrateUp(db, migrations);
+    expect(appliedMigrations(db)).toEqual([1, 2, 3, 4]);
+
+    const post = new DomainRepository(db).getPost('prePost');
+    const comment = new DomainRepository(db).getComment('preComment');
+    expect(post && !('isDeleted' in post) ? post.content : undefined).toBe('pre-C9 post');
+    expect(comment && !('isDeleted' in comment) ? comment.content : undefined).toBe('pre-C9 comment');
+    expect(new MembershipRepository(db).resolveMembership('preWs', 'preHuman')?.role).toBe('write');
+  });
+
+  it('rolls migration 0004 back cleanly to the pre-C9 schema shape', () => {
+    migrateDown(db, migrations, 4);
+    expect(appliedMigrations(db)).toEqual([1, 2, 3]);
+    const tables = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+      .all() as { name: string }[];
+    const names = tables.map((t) => t.name);
+    expect(names).not.toContain('auth_identity');
+    expect(names).not.toContain('auth_session');
+    expect(names).not.toContain('workspace_invite');
+    const memberColumns = db
+      .prepare('PRAGMA table_info(workspace_member)')
+      .all() as { name: string }[];
+    expect(memberColumns.map((c) => c.name)).not.toContain('status');
+
+    migrateUp(db, migrations);
+    expect(appliedMigrations(db)).toEqual([1, 2, 3, 4]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Migration 0002 apply/rollback
 // ---------------------------------------------------------------------------
 
 describe('C1a membership migration', () => {
   it('applies migration 0002 alongside migration 0001 on a fresh database', () => {
-    expect(appliedMigrations(db)).toEqual([1, 2, 3]);
+    expect(appliedMigrations(db)).toEqual([1, 2, 3, 4]);
     const tables = db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
       .all() as { name: string }[];

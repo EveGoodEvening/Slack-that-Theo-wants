@@ -16,7 +16,7 @@ import {
   AGENT_TOKEN_SCHEME,
   MembershipRepository,
 } from '../security/index.js';
-import { PRINCIPAL_HEADERS } from '../security/principal.js';
+import { AuthRepository, sessionCookie } from '../security/auth.js';
 import { IDEMPOTENCY_HEADER } from './agentService.js';
 import { ACTIVITY_EVENT_TYPES, type ActivityEvent } from './activityEvents.js';
 
@@ -31,6 +31,7 @@ import { ACTIVITY_EVENT_TYPES, type ActivityEvent } from './activityEvents.js';
 let db: BetterSqliteDatabase;
 let domain: DomainRepository;
 let membership: MembershipRepository;
+let auth: AuthRepository;
 
 beforeAll(() => {
   db = openDatabase(':memory:');
@@ -50,18 +51,17 @@ beforeEach(() => {
   migrateUp(db, migrations);
   domain = new DomainRepository(db);
   membership = new MembershipRepository(db);
+  auth = new AuthRepository(db);
 });
 
 function app(): Hono {
-  const deps: AppDeps = { repository: domain, membership, db };
+  const deps: AppDeps = { repository: domain, membership, auth, db };
   return createApp(deps);
 }
 
 function headersFor(actorId: string, workspaceId: string): Record<string, string> {
-  return {
-    [PRINCIPAL_HEADERS.actorId]: actorId,
-    [PRINCIPAL_HEADERS.workspaceId]: workspaceId,
-  };
+  const session = auth.createSession({ actorId, workspaceId });
+  return { cookie: sessionCookie(session.secret) };
 }
 
 function bearerToken(secret: string): Record<string, string> {

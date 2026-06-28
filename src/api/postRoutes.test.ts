@@ -10,7 +10,7 @@ import {
 } from '../db/index.js';
 import { DomainRepository } from '../domain/index.js';
 import { MembershipRepository } from '../security/membership.js';
-import { PRINCIPAL_HEADERS } from '../security/principal.js';
+import { AuthRepository, sessionCookie } from '../security/auth.js';
 import { createApp, type AppDeps } from '../index.js';
 import { decodeCursor, encodeCursor } from './postService.js';
 
@@ -33,6 +33,7 @@ import { decodeCursor, encodeCursor } from './postService.js';
 let db: BetterSqliteDatabase;
 let domain: DomainRepository;
 let membership: MembershipRepository;
+let auth: AuthRepository;
 
 beforeAll(() => {
   db = openDatabase(':memory:');
@@ -51,18 +52,17 @@ beforeEach(() => {
   migrateUp(db, migrations);
   domain = new DomainRepository(db);
   membership = new MembershipRepository(db);
+  auth = new AuthRepository(db);
 });
 
 function app(): Hono {
-  const deps: AppDeps = { repository: domain, membership };
+  const deps: AppDeps = { repository: domain, membership, auth };
   return createApp(deps);
 }
 
 function headersFor(actorId: string, workspaceId: string): Record<string, string> {
-  return {
-    [PRINCIPAL_HEADERS.actorId]: actorId,
-    [PRINCIPAL_HEADERS.workspaceId]: workspaceId,
-  };
+  const session = auth.createSession({ actorId, workspaceId });
+  return { cookie: sessionCookie(session.secret) };
 }
 
 /**
@@ -470,28 +470,39 @@ describe('C2 cross-workspace isolation', () => {
     expect(postsB.map((p) => p.id)).toEqual(['pB']);
   });
 
-  it('a write principal cannot create a post targeting another workspace via header spoof', async () => {
-    // The auth middleware binds the principal to the (workspace, actor) pair in
-    // the membership table; the service always writes to the principal's own
-    // workspace, so a wsA actor cannot create a post in wsB.
-    const { humanA, wsA, humanB, wsB } = twoWorkspaceFixture();
+  it('rejects a stale session after membership is no longer active with 401', async () => {
+    const { humanA, wsA } = twoWorkspaceFixture();
     const a = app();
-    // humanA presents wsA headers; the created post lands in wsA, never wsB.
-    const post = await createPostViaApi(a, humanA.id, wsA.id, 'a-post');
-    const read = domain.getPost(post.id);
-    expect(read && !('isDeleted' in read) ? read?.workspaceId : undefined).toBe(wsA.id);
-    // And wsB's feed does not see it.
-    const { posts } = await listFeedViaApi(a, humanB.id, wsB.id);
-    expect(posts.map((p) => p.id)).toEqual([]);
-  });
+    const headers = headersFor(humanA.id, wsA.id);
+    membership.suspendMembership(wsA.id, humanA.id);
 
-  it('rejects an actor presenting a workspace it is not a member of with 401', async () => {
-    const { humanA, wsA, wsB } = twoWorkspaceFixture();
-    const a = app();
-    // humanA is a member of wsA only; presenting wsB is not a membership.
-    const res = await a.request('/posts', { headers: headersFor(humanA.id, wsB.id) });
+    const res = await a.request('/posts', { headers });
     expect(res.status).toBe(401);
     const body = (await res.json()) as { code: string };
     expect(body.code).toBe('principal_not_found');
+  });
+
+  it('uses an explicit shared membership as a separate feed/write scope', async () => {
+    const { humanA, wsA, humanB, wsB } = twoWorkspaceFixture();
+    membership.createShare({
+      workspaceId: wsB.id,
+      actorId: humanA.id,
+      role: 'write',
+      sharedByActorId: humanB.id,
+    });
+    seedPost('home', wsA.id, humanA.id, 'home post', '2026-06-01T00:00:00.000Z');
+    seedPost('shared-existing', wsB.id, humanB.id, 'shared existing', '2026-06-02T00:00:00.000Z');
+    const a = app();
+
+    const before = await listFeedViaApi(a, humanA.id, wsB.id);
+    expect(before.posts.map((p) => p.id)).toEqual(['shared-existing']);
+
+    const created = await createPostViaApi(a, humanA.id, wsB.id, 'shared post by Ada');
+    const stored = domain.getPost(created.id);
+    expect(stored && !('isDeleted' in stored) ? stored.workspaceId : undefined).toBe(wsB.id);
+    expect(stored && !('isDeleted' in stored) ? stored.authorActorId : undefined).toBe(humanA.id);
+
+    const homeFeed = await listFeedViaApi(a, humanA.id, wsA.id);
+    expect(homeFeed.posts.map((p) => p.id)).toEqual(['home']);
   });
 });

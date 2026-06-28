@@ -350,10 +350,13 @@ export class AgentService {
     return this.deps.credentials.rotate(request);
   }
 
-  /** Revoke all active credentials for the agent. */
+  /** Revoke all active credentials for the agent in the current workspace. */
   revokeCredentials(input: { principal: Principal }): number {
     assertAgent(input.principal);
-    return this.deps.credentials.revokeAllForActor(input.principal.actorId);
+    return this.deps.credentials.revokeAllForActorInWorkspace(
+      input.principal.actorId,
+      input.principal.workspaceId,
+    );
   }
 
   // --- internal: idempotency + audit + quota wrapper ----------------------

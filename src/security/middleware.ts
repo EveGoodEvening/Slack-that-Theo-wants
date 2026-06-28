@@ -1,21 +1,19 @@
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import type { Context, MiddlewareHandler } from 'hono';
 import type { MembershipRepository } from './membership.js';
+import type { AuthRepository } from './auth.js';
 import { resolvePrincipal } from './principal.js';
 import { AuthorizationError, type Principal, type Role } from './types.js';
 
 /**
- * C1a shared authorization middleware.
+ * C9 shared authorization middleware.
  *
- * This is the single Hono middleware every later exposed surface (C2/C3/C7/C8)
- * routes through. It resolves a Principal from the request via the stubbed
- * principal resolver, stores it on the context as `principal`, and (optionally)
- * enforces a minimum role for the route. Per-endpoint read/write scope checks
- * are then performed against the stored principal using the helpers in
- * `authorization.ts` (assertCanRead / assertCanWrite / filterByScope).
- *
- * C9 replaces the stubbed `resolvePrincipal` with real sign-in; this middleware
- * and the `principal` context variable persist.
+ * This is the single Hono middleware every protected human app/API surface
+ * routes through. It resolves a Principal from a sign-in session, stores it on
+ * the context as `principal`, and (optionally) enforces a minimum role for the
+ * route. Per-endpoint read/write scope checks remain in the service layer via
+ * `assertCanRead` / `assertCanWrite`, so resolving a session alone never grants
+ * cross-workspace access.
  */
 
 /** Hono context variables added by the authorization middleware. */
@@ -61,11 +59,12 @@ export function installAuthorizationErrorHandler(app: {
  */
 export function authMiddleware(
   membership: MembershipRepository,
+  auth: AuthRepository,
 ): MiddlewareHandler<{ Variables: AuthVariables }> {
   return async (c, next) => {
     let principal: Principal;
     try {
-      principal = resolvePrincipal(c.req, membership);
+      principal = resolvePrincipal(c.req, membership, auth);
     } catch (err) {
       if (err instanceof AuthorizationError) {
         const { status, body } = authorizationErrorResponse(err);
@@ -88,11 +87,12 @@ export function authMiddleware(
 export function requireRole(
   membership: MembershipRepository,
   role: Role,
+  auth: AuthRepository,
 ): MiddlewareHandler<{ Variables: AuthVariables }> {
   return async (c, next) => {
     let principal: Principal;
     try {
-      principal = resolvePrincipal(c.req, membership);
+      principal = resolvePrincipal(c.req, membership, auth);
     } catch (err) {
       if (err instanceof AuthorizationError) {
         const { status, body } = authorizationErrorResponse(err);

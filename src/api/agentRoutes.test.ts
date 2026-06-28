@@ -22,6 +22,7 @@ import {
   QuotaExceededError,
   requestDigest,
   verifySecret,
+  AuthRepository,
 } from '../security/index.js';
 import { createApp, type AppDeps } from '../index.js';
 import { AgentService, IDEMPOTENCY_HEADER } from './agentService.js';
@@ -56,6 +57,7 @@ let db: BetterSqliteDatabase;
 let domain: DomainRepository;
 let membership: MembershipRepository;
 let credentials: AgentCredentialRepository;
+let auth: AuthRepository;
 let profiles: AgentProfileRepository;
 let audit: AgentAuditRepository;
 let idempotency: AgentIdempotencyRepository;
@@ -79,6 +81,7 @@ beforeEach(() => {
   migrateUp(db, migrations);
   domain = new DomainRepository(db);
   membership = new MembershipRepository(db);
+  auth = new AuthRepository(db);
   credentials = new AgentCredentialRepository(db);
   profiles = new AgentProfileRepository(db);
   audit = new AgentAuditRepository(db);
@@ -87,7 +90,7 @@ beforeEach(() => {
 });
 
 function app(): Hono {
-  const deps: AppDeps = { repository: domain, membership, db };
+  const deps: AppDeps = { repository: domain, membership, auth, db };
   return createApp(deps);
 }
 
@@ -263,11 +266,44 @@ describe('C7 agent credential lifecycle', () => {
     ).toThrow();
   });
 
-  it('a credential cannot be issued for an actor in the wrong workspace', () => {
+  it('a credential cannot be issued for a workspace where the agent is not a member', () => {
     twoWorkspaceFixture();
     expect(() =>
       credentials.issue({ actorId: 'agentA', workspaceId: 'wsB' }),
     ).toThrow();
+  });
+
+  it('a credential issued in a shared workspace inherits that workspace scope', async () => {
+    twoWorkspaceFixture();
+    membership.createShare({
+      workspaceId: 'wsB',
+      actorId: 'agentA',
+      role: 'write',
+      sharedByActorId: 'humanB',
+    });
+    const issued = credentials.issue({ actorId: 'agentA', workspaceId: 'wsB' });
+    expect(credentials.verify(issued.secret)?.workspaceId).toBe('wsB');
+
+    const res = await app().request('/agents/posts', {
+      method: 'POST',
+      headers: {
+        ...bearerToken(issued.secret),
+        [IDEMPOTENCY_HEADER]: 'shared-ws-post',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ content: 'shared workspace agent post' }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { result: { workspaceId: string; authorActorId: string } };
+    expect(body.result.workspaceId).toBe('wsB');
+    expect(body.result.authorActorId).toBe('agentA');
+    const feed = await app().request('/agents/feed', {
+      headers: bearerToken(issued.secret),
+    });
+    expect(feed.status).toBe(200);
+    const page = (await feed.json()) as { posts: { workspaceId: string }[] };
+    expect(page.posts.every((post) => post.workspaceId === 'wsB')).toBe(true);
   });
 });
 

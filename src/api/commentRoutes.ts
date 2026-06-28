@@ -1,6 +1,7 @@
 import { type Context, Hono } from 'hono';
 import type { DomainRepository } from '../domain/repositories.js';
 import type { MembershipRepository } from '../security/membership.js';
+import type { AuthRepository } from '../security/auth.js';
 import {
   installAuthorizationErrorHandler,
   requireRole,
@@ -18,13 +19,13 @@ import {
  * C3 comment/reply HTTP surface.
  *
  * Mounts four endpoints under /posts/:postId/comments and /comments. Each
- * endpoint installs the shared C1a role middleware directly:
+ * endpoint installs the shared C9 role middleware directly:
  * - POST   /posts/:postId/comments          create a first-level comment (write)
  * - POST   /comments/:parentId/replies      create a reply to any comment (write)
  * - GET    /comments/:id/subtree            fetch a subtree rooted at a comment (read)
  * - GET    /posts/:postId/thread            fetch the full thread under a post (read)
  *
- * Every endpoint resolves the principal via the C1a middleware and delegates to
+ * Every endpoint resolves the principal from a sign-in session and delegates to
  * the CommentService, which enforces the workspace/group boundary before any
  * read/write and reuses the C1 shared bump helper for every insert.
  * AuthorizationError is mapped by the shared C1a error handler; domain
@@ -34,6 +35,7 @@ import {
 export interface CommentRouteDeps {
   repository: DomainRepository;
   membership: MembershipRepository;
+  auth: AuthRepository;
   /** Optional service override; defaults to CommentServiceImpl over the repo. */
   service?: CommentService;
 }
@@ -53,7 +55,7 @@ export function commentRoutes(deps: CommentRouteDeps): Hono<{
   // Create first-level comment — write role baseline.
   route.post(
     '/posts/:postId/comments',
-    requireRole(deps.membership, 'write'),
+    requireRole(deps.membership, 'write', deps.auth),
     async (c) => {
       const principal = c.get('principal');
       const postId = c.req.param('postId');
@@ -85,7 +87,7 @@ export function commentRoutes(deps: CommentRouteDeps): Hono<{
   // Create reply to any comment/reply — write role baseline.
   route.post(
     '/comments/:parentId/replies',
-    requireRole(deps.membership, 'write'),
+    requireRole(deps.membership, 'write', deps.auth),
     async (c) => {
       const principal = c.get('principal');
       const parentId = c.req.param('parentId');
@@ -117,7 +119,7 @@ export function commentRoutes(deps: CommentRouteDeps): Hono<{
   // Fetch subtree rooted at a comment — read role baseline.
   route.get(
     '/comments/:id/subtree',
-    requireRole(deps.membership, 'read'),
+    requireRole(deps.membership, 'read', deps.auth),
     (c) => {
       const principal = c.get('principal');
       const id = c.req.param('id');
@@ -133,7 +135,7 @@ export function commentRoutes(deps: CommentRouteDeps): Hono<{
   // Fetch full thread under a post — read role baseline.
   route.get(
     '/posts/:postId/thread',
-    requireRole(deps.membership, 'read'),
+    requireRole(deps.membership, 'read', deps.auth),
     (c) => {
       const principal = c.get('principal');
       const postId = c.req.param('postId');
