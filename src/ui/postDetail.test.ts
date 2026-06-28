@@ -426,7 +426,7 @@ describe('C5 post detail conversation rendering', () => {
     expect(html).toContain('100+ deeper replies are collapsed');
     expect(html).not.toContain('0 deeper replies are collapsed');
     expect(html).toMatch(
-      /<details class="reply-branch" open>[\s\S]*<ol class="reply-list">[\s\S]*<\/ol>[\s\S]*<\/details>/,
+      /<details[^>]*\bclass="[^"]*reply-branch[^"]*"[^>]*\bopen\b[^>]*>[\s\S]*<ol[^>]*\bclass="[^"]*reply-list[^"]*"[^>]*>[\s\S]*<\/ol>[\s\S]*<\/details>/,
     );
   });
 
@@ -479,6 +479,71 @@ describe('C5 post detail conversation rendering', () => {
     expect(html).toContain('Comment added.');
     expect(html).toContain('Composer comment');
     expect(html).toContain('1 total comment/reply; 1 first-level comment.');
+  });
+});
+
+describe('C10 post detail accessibility and error states', () => {
+  it('renders conversation landmarks, labels, and live status regions', async () => {
+    const { workspace, ada, bo } = workspaceFixture();
+    seedPost('post-1', workspace.id, ada.id, 'Accessible root post', '2026-01-01T00:00:00.000Z');
+    seedComment({
+      id: 'comment-a',
+      workspaceId: workspace.id,
+      rootPostId: 'post-1',
+      authorActorId: bo.id,
+      content: 'Accessible comment',
+      createdAt: '2026-01-01T00:01:00.000Z',
+    });
+
+    const { status, html } = await getPostDetail(app(), 'post-1', ada.id, workspace.id);
+
+    expect(status).toBe(200);
+    expect(html).toContain('<a class="skip-link" href="#main-content">Skip to main content</a>');
+    expect(html).toContain('<main id="main-content" tabindex="-1">');
+    expect(html).toContain('<nav class="back-link" aria-label="Post detail navigation">');
+    expect(html).toContain('class="post-detail" data-post-id="post-1" aria-label="Post by ada; last activity');
+    expect(html).toContain('<section class="conversation" aria-labelledby="comments-heading" aria-describedby="conversation-counts" aria-live="polite" aria-busy="false">');
+    expect(html).toContain('<h2 id="comments-heading">Comments</h2>');
+    expect(html).toContain('id="conversation-counts" class="counts"');
+    expect(html).toContain('aria-describedby="new-comment-help new-comment-status"');
+    expect(html).toContain('aria-controls="new-comment-preview"');
+    expect(html).toContain('class="comment-card " aria-label="Comment by bo"');
+    expect(html).toContain('data-realtime-status="idle" role="status" aria-live="polite" aria-atomic="true"');
+  });
+
+  it('renders not-found post detail requests as accessible error documents', async () => {
+    const { workspace, ada } = workspaceFixture();
+
+    const { status, html } = await getPostDetail(app(), 'missing-post', ada.id, workspace.id);
+
+    expect(status).toBe(404);
+    expect(html).toContain('<main id="main-content" tabindex="-1">');
+    expect(html).toContain('class="conversation-error" role="alert" aria-live="assertive"');
+    expect(html).toContain('not_found');
+    expect(html).toContain('<a href="/feed">Back to feed</a>');
+  });
+
+  it('renders write permission denied in-place without creating a comment', async () => {
+    const { workspace, ada } = workspaceFixture();
+    seedPost('post-1', workspace.id, ada.id, 'Read-only post', '2026-01-01T00:00:00.000Z');
+    membership.setMembership(workspace.id, ada.id, 'read');
+
+    const { status, html } = await postCommentForm(app(), 'post-1', ada.id, workspace.id, 'denied');
+
+    expect(status).toBe(403);
+    expect(html).toContain('class="conversation-error" role="alert" aria-live="assertive"');
+    expect(html).toContain('write_forbidden');
+    expect(domain.countCommentsForPost('post-1')).toBe(0);
+  });
+
+  it('renders an empty comment to a missing post as not found instead of an unhandled error', async () => {
+    const { workspace, ada } = workspaceFixture();
+
+    const { status, html } = await postCommentForm(app(), 'missing-post', ada.id, workspace.id, '');
+
+    expect(status).toBe(404);
+    expect(html).toContain('class="conversation-error" role="alert" aria-live="assertive"');
+    expect(html).toContain('not_found');
   });
 });
 
@@ -1386,5 +1451,33 @@ describe('C8 post detail realtime progressive enhancement', () => {
     expect(document.conversation()).toBe(afterNewer);
     expect(document.conversation().innerHTML).toContain('newer conversation with latest reply');
     expect(document.conversation().innerHTML).not.toContain('stale older conversation');
+  });
+
+  it('announces post-detail fragment fetch failures in the live status region', async () => {
+    const { workspace, ada } = workspaceFixture();
+    seedPost(
+      'post1',
+      workspace.id,
+      ada.id,
+      'Realtime network error post',
+      '2024-01-01T00:00:00.000Z',
+    );
+    const detail = await getPostDetail(app(), 'post1', ada.id, workspace.id);
+    expect(detail.status).toBe(200);
+
+    const script = extractPostDetailRealtimeScript(detail.html);
+    const document = new PostDetailRealtimeDocument();
+    const fetches = installPostDetailRealtimeGlobals(document, async () => {
+      throw new Error('network unavailable');
+    });
+
+    Function(script)();
+    currentPostDetailEventSource().emit(ACTIVITY_EVENT_TYPES.commentCreated, {
+      rootPostId: 'post1',
+    });
+    await flushPromises();
+
+    expect(fetches).toEqual(['/feed/post1/fragments/conversation']);
+    expect(document.status.textContent).toBe('Live updates paused; refresh to catch up.');
   });
 });

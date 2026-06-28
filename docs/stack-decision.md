@@ -507,3 +507,33 @@ These are recorded here so C10 hardening does not re-litigate the auth model.
   workspace scopes are representable. Rollback drops C9-only auth/invite/share
   tables and restores pre-C9 author-home FKs, copying back only rows compatible
   with the older schema.
+
+## C10 decisions (hardening and review pass)
+
+- **Accessibility hardening:** Feed and post-detail stay server-rendered Hono
+  HTML; C10 adds semantic landmarks (`main`, section headings, nav), skip links,
+  explicit form descriptions, named article/comment regions, and live status / alert
+  regions. This preserves the existing no-framework UI and C3a renderer boundary
+  while making form submission, realtime health, permission errors, and not-found
+  pages available to assistive technology.
+- **Error-state completeness:** Human UI routes render durable HTML error
+  surfaces for missing sessions, permission denial, not-found posts/comments,
+  validation failures, and realtime fragment fetch failures. Realtime remains a
+  progressive enhancement: a network failure updates a status region and tells the
+  user to refresh; it never becomes the source of truth.
+- **Hot-path indexes:** Migration 0005 adds focused indexes for the hardened read
+  paths: a partial live-feed index on `(workspace_id, last_activity_at DESC, id
+  DESC) WHERE deleted_at IS NULL`, a live comment-count index on `root_post_id`,
+  and a first-level comment-tree index on `(root_post_id, created_at, id) WHERE
+  parent_id IS NULL`. The recursive subtree child lookup continues to use the
+  existing `idx_comment_parent (parent_id, created_at, id)` index because
+  tombstones must remain retrievable.
+- **Performance checks:** C10 benchmarks are maintained as targeted Vitest tests
+  rather than a new benchmarking dependency. They seed large in-memory SQLite
+  fixtures, assert feed-pagination and deep-rendering invariants, enforce a
+  conservative 1.5s threshold for 500-post pagination and 250-level deep-thread
+  rendering, and assert SQLite query plans use the intended indexes.
+- **Documentation scope:** README is the durable local-dev and API entry point for
+  humans and agents. It documents install/run/test commands, database/host
+  overrides, browser routes, JSON human/session routes, and agent idempotency /
+  credential usage without introducing a separate docs tree.

@@ -174,6 +174,40 @@ describe('C4 feed view', () => {
   });
 });
 
+describe('C10 feed accessibility and error states', () => {
+  it('renders feed landmarks, labels, and live status regions', async () => {
+    const { humanA, wsA } = twoWorkspaceFixture();
+    seedPost('p1', wsA.id, humanA.id, 'accessible post', '2026-01-01T00:00:00.000Z');
+
+    const { status, html } = await getFeed(app(), humanA.id, wsA.id);
+
+    expect(status).toBe(200);
+    expect(html).toContain('<a class="skip-link" href="#main-content">Skip to main content</a>');
+    expect(html).toContain('<main id="main-content" tabindex="-1">');
+    expect(html).toContain('<section class="feed" id="feed" aria-labelledby="feed-heading" aria-live="polite" aria-busy="false">');
+    expect(html).toContain('<h2 id="feed-heading" class="sr-only">Posts</h2>');
+    expect(html).toContain('aria-describedby="create-post-help create-post-status"');
+    expect(html).toContain('aria-controls="create-post-preview"');
+    expect(html).toContain('id="create-post-status" class="form-status" role="status" aria-live="polite" aria-atomic="true"');
+    expect(html).toContain('aria-label="Post by humanA; last activity 2026-01-01T00:00:00.000Z"');
+    expect(html).toContain('aria-label="View conversation for post by humanA"');
+    expect(html).toContain('data-realtime-status="idle" role="status" aria-live="polite" aria-atomic="true"');
+  });
+
+  it('renders GET /feed missing-principal failures as an accessible error document', async () => {
+    twoWorkspaceFixture();
+
+    const res = await app().request('/feed');
+    const html = await res.text();
+
+    expect(res.status).toBe(401);
+    expect(html).toContain('<main id="main-content" tabindex="-1">');
+    expect(html).toContain('class="feed-error" role="alert" aria-live="assertive"');
+    expect(html).toContain('missing_principal');
+    expect(html).toContain('<a href="/auth/signin">Sign in</a>');
+  });
+});
+
 describe('C4 create post appears in feed', () => {
   it('creates a post via the form and it appears at the top of the feed', async () => {
     const { humanA, wsA } = twoWorkspaceFixture();
@@ -659,5 +693,30 @@ describe('C8 feed realtime progressive enhancement', () => {
 
     expect(document.postOrder()).toEqual(['newer', 'older']);
     expect(document.status.textContent).toBe('Live updates connected.');
+  });
+
+  it('announces feed fragment fetch failures in the live status region', async () => {
+    const { humanA, wsA } = twoWorkspaceFixture();
+    seedPost('old', wsA.id, humanA.id, 'old post', '2024-01-01T00:00:00.000Z');
+    const detail = await getFeed(app(), humanA.id, wsA.id);
+    expect(detail.status).toBe(200);
+
+    const script = extractFeedRealtimeScript(detail.html);
+    const document = new FeedRealtimeDocument([
+      { postId: 'old', lastActivityAt: '2024-01-01T00:00:00.000Z' },
+    ]);
+    const fetches = installFeedRealtimeGlobals(document, async () => ({
+      ok: false,
+      text: async () => 'network unavailable',
+    }));
+
+    Function(script)();
+    currentFeedEventSource().emit(ACTIVITY_EVENT_TYPES.commentCreated, {
+      rootPostId: 'old',
+    });
+    await flushPromises();
+
+    expect(fetches).toEqual(['/feed/fragments/posts/old']);
+    expect(document.status.textContent).toBe('Live updates paused; refresh to catch up.');
   });
 });

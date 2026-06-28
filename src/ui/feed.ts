@@ -54,13 +54,14 @@ function renderPostCard(post: PostDTO): string {
   const renderable: RenderableContent = { content: post.content };
   const rendered = renderPostContent(renderable);
   const conversationHref = `/feed/${encodeURIComponent(post.id)}`;
-  return `    <article class="post-card" data-post-id="${escapeText(post.id)}" data-last-activity-at="${escapeText(post.lastActivityAt)}">
+  const cardLabel = `Post by ${post.authorActorId}; last activity ${post.lastActivityAt}`;
+  return `    <article class="post-card" data-post-id="${escapeText(post.id)}" data-last-activity-at="${escapeText(post.lastActivityAt)}" aria-label="${escapeText(cardLabel)}">
       <header class="post-meta">
         <span class="post-author">${escapeText(post.authorActorId)}</span>
         <time class="post-activity" datetime="${escapeText(post.lastActivityAt)}">${escapeText(post.lastActivityAt)}</time>
       </header>
       <div class="post-body">${rendered.html}</div>
-      <p class="post-link"><a href="${escapeText(conversationHref)}">View conversation</a></p>
+      <p class="post-link"><a href="${escapeText(conversationHref)}" aria-label="${escapeText(`View conversation for post by ${post.authorActorId}`)}">View conversation</a></p>
     </article>`;
 }
 
@@ -185,10 +186,10 @@ function renderFeedDocument(
       : cards;
 
   const errorBlock = opts.error
-    ? `    <p class="feed-error" role="alert">${escapeText(opts.error)}</p>`
+    ? `    <p class="feed-error" role="alert" aria-live="assertive">${escapeText(opts.error)}</p>`
     : '';
   const noticeBlock = opts.notice
-    ? `    <p class="feed-notice" role="status">${escapeText(opts.notice)}</p>`
+    ? `    <p class="feed-notice" role="status" aria-live="polite" aria-atomic="true">${escapeText(opts.notice)}</p>`
     : '';
 
   // The create-post form posts only the untrusted content; the C9 session
@@ -201,10 +202,14 @@ function renderFeedDocument(
   <title>Feed — Slack that Theo wants</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; color: #111; }
+    .skip-link { position: absolute; left: -999px; top: 0; padding: 0.5rem 0.75rem; background: #fff; border: 1px solid #111; border-radius: 4px; }
+    .skip-link:focus { left: 1rem; top: 1rem; z-index: 1000; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
     header.page-header { border-bottom: 1px solid #ddd; padding-bottom: 1rem; margin-bottom: 1rem; }
     form.create-post { margin-bottom: 2rem; }
     form.create-post textarea { width: 100%; min-height: 80px; box-sizing: border-box; padding: 0.5rem; font: inherit; }
     form.create-post button { margin-top: 0.5rem; }
+    .form-help, .form-status { color: #555; font-size: 0.85rem; margin: 0.25rem 0 0.5rem; }
     .post-card { border: 1px solid #e1e1e1; border-radius: 6px; padding: 0.75rem 1rem; margin-bottom: 1rem; }
     .post-meta { display: flex; justify-content: space-between; color: #555; font-size: 0.85rem; margin-bottom: 0.5rem; }
     .post-body p:first-child { margin-top: 0; }
@@ -219,24 +224,30 @@ ${CODE_BLOCK_CSS}
   </style>
 </head>
 <body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
   <header class="page-header">
     <h1>Feed</h1>
     <p class="principal">Signed in as <strong>${escapeText(principal.actorId)}</strong> in workspace <strong>${escapeText(principal.workspaceId)}</strong>.</p>
   </header>
+  <main id="main-content" tabindex="-1">
 ${errorBlock}
 ${noticeBlock}
-  <form class="create-post" method="post" action="/feed" id="create-post-form">
+  <form class="create-post" method="post" action="/feed" id="create-post-form" aria-describedby="create-post-help create-post-status">
     <label for="content">Create a post</label>
-    <textarea id="content" name="content" required maxlength="4000" placeholder="Write something…"></textarea>
+    <p id="create-post-help" class="form-help">Markdown-style text and fenced code blocks are supported.</p>
+    <textarea id="content" name="content" required maxlength="4000" placeholder="Write something…" aria-describedby="create-post-help create-post-status"></textarea>
     <button type="submit">Post</button>
-    <button type="button" class="preview-toggle" data-preview-for="content" aria-pressed="false">Preview</button>
-    <div class="composer-preview" data-preview-for="content"></div>
+    <button type="button" class="preview-toggle" data-preview-for="content" aria-controls="create-post-preview" aria-pressed="false">Preview</button>
+    <div id="create-post-preview" class="composer-preview" data-preview-for="content" role="status" aria-live="polite" aria-atomic="true"></div>
+    <p id="create-post-status" class="form-status" role="status" aria-live="polite" aria-atomic="true"></p>
     <noscript><p class="feed-loading">Submitting…</p></noscript>
   </form>
-  <section class="feed" id="feed" aria-live="polite">
+  <section class="feed" id="feed" aria-labelledby="feed-heading" aria-live="polite" aria-busy="false">
+    <h2 id="feed-heading" class="sr-only">Posts</h2>
 ${body}
   </section>
-  <p class="feed-realtime-status" data-realtime-status="idle">Live updates stream when this browser supports EventSource.</p>
+  <p class="feed-realtime-status" data-realtime-status="idle" role="status" aria-live="polite" aria-atomic="true">Live updates stream when this browser supports EventSource.</p>
+  </main>
   <script>
     // Progressive enhancement: show a loading indicator on submit without
     // blocking the noscript fallback. Server-rendered content is already
@@ -248,6 +259,8 @@ ${body}
         form.classList.add('is-loading');
         var feed = document.getElementById('feed');
         if (feed) feed.setAttribute('aria-busy', 'true');
+        var formStatus = document.getElementById('create-post-status');
+        if (formStatus) formStatus.textContent = 'Submitting post…';
       });
     })();
 ${renderFeedRealtimeScript()}
@@ -268,13 +281,18 @@ function renderErrorDocument(message: string, code: string): string {
   <title>Feed — error</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; color: #111; }
+    .skip-link { position: absolute; left: -999px; top: 0; padding: 0.5rem 0.75rem; background: #fff; border: 1px solid #111; border-radius: 4px; }
+    .skip-link:focus { left: 1rem; top: 1rem; }
     .feed-error { color: #b00; }
   </style>
 </head>
 <body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
   <header class="page-header"><h1>Feed</h1></header>
-  <p class="feed-error" role="alert">${escapeText(message)} (code: ${escapeText(code)})</p>
-  <p><a href="/auth/signin">Sign in</a> to choose a workspace/group.</p>
+  <main id="main-content" tabindex="-1">
+    <p class="feed-error" role="alert" aria-live="assertive">${escapeText(message)} (code: ${escapeText(code)})</p>
+    <p><a href="/auth/signin">Sign in</a> to choose a workspace/group, or ask for access if this is a permission error.</p>
+  </main>
 </body>
 </html>`;
 }
@@ -432,14 +450,14 @@ export function feedRoutes(deps: FeedRouteDeps): Hono {
     } catch (err) {
       if (err instanceof AuthorizationError) {
         return c.html(
-          `<p class="feed-error" role="alert">${escapeText(err.message)} (code: ${escapeText(err.code)})</p>`,
+          `<p class="feed-error" role="alert" aria-live="assertive">${escapeText(err.message)} (code: ${escapeText(err.code)})</p>`,
           err.status as 401 | 403,
         );
       }
       throw err;
     }
     if (typeof content !== 'string') {
-      return c.html('<p class="feed-error">content must be a string</p>', 400);
+      return c.html('<p class="feed-error" role="alert">content must be a string</p>', 400);
     }
     // Pure sanitizing render of untrusted input — identical to live posts.
     return c.html(renderContent(content), 200);

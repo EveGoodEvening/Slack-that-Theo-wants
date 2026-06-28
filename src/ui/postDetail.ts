@@ -56,7 +56,8 @@ function isDeletedComment(
 function renderPostArticle(post: PostDTO): string {
   const renderable: RenderableContent = { content: post.content };
   const rendered = renderPostContent(renderable);
-  return `    <article class="post-detail" data-post-id="${escapeText(post.id)}">
+  const articleLabel = `Post by ${post.authorActorId}; last activity ${post.lastActivityAt}`;
+  return `    <article class="post-detail" data-post-id="${escapeText(post.id)}" aria-label="${escapeText(articleLabel)}">
       <header class="post-meta">
         <span class="post-author">${escapeText(post.authorActorId)}</span>
         <time class="post-activity" datetime="${escapeText(post.lastActivityAt)}">${escapeText(post.lastActivityAt)}</time>
@@ -67,12 +68,14 @@ function renderPostArticle(post: PostDTO): string {
 
 
 function renderCommentComposer(postId: string): string {
-  return `    <form class="comment-composer" method="post" action="/feed/${escapeText(postId)}/comments">
+  return `    <form class="comment-composer" method="post" action="/feed/${escapeText(postId)}/comments" aria-describedby="new-comment-help new-comment-status">
       <label for="new-comment">Add a comment</label>
-      <textarea id="new-comment" name="content" required maxlength="4000" placeholder="Write a comment…"></textarea>
+      <p id="new-comment-help" class="form-help">Comments support Markdown-style text and fenced code blocks.</p>
+      <textarea id="new-comment" name="content" required maxlength="4000" placeholder="Write a comment…" aria-describedby="new-comment-help new-comment-status"></textarea>
       <button type="submit">Comment</button>
-      <button type="button" class="preview-toggle" data-preview-for="new-comment" aria-pressed="false">Preview</button>
-      <div class="composer-preview" data-preview-for="new-comment"></div>
+      <button type="button" class="preview-toggle" data-preview-for="new-comment" aria-controls="new-comment-preview" aria-pressed="false">Preview</button>
+      <div id="new-comment-preview" class="composer-preview" data-preview-for="new-comment" role="status" aria-live="polite" aria-atomic="true"></div>
+      <p id="new-comment-status" class="form-status" role="status" aria-live="polite" aria-atomic="true"></p>
     </form>`;
 }
 
@@ -82,12 +85,18 @@ function renderReplyComposer(
   parentAuthor: string,
 ): string {
   const escapedParentId = escapeText(parentId);
-  return `      <form class="reply-composer" method="post" action="/feed/${escapeText(postId)}/comments/${escapedParentId}/replies">
-        <label for="reply-${escapedParentId}">Reply to ${escapeText(parentAuthor)}</label>
-        <textarea id="reply-${escapedParentId}" name="content" required maxlength="4000" placeholder="Reply…"></textarea>
+  const replyTextareaId = `reply-${escapedParentId}`;
+  const replyHelpId = `reply-help-${escapedParentId}`;
+  const replyStatusId = `reply-status-${escapedParentId}`;
+  const replyPreviewId = `reply-preview-${escapedParentId}`;
+  return `      <form class="reply-composer" method="post" action="/feed/${escapeText(postId)}/comments/${escapedParentId}/replies" aria-describedby="${replyHelpId} ${replyStatusId}">
+        <label for="${replyTextareaId}">Reply to ${escapeText(parentAuthor)}</label>
+        <p id="${replyHelpId}" class="form-help">Replies stay nested under this comment.</p>
+        <textarea id="${replyTextareaId}" name="content" required maxlength="4000" placeholder="Reply…" aria-describedby="${replyHelpId} ${replyStatusId}"></textarea>
         <button type="submit">Reply</button>
-        <button type="button" class="preview-toggle" data-preview-for="reply-${escapedParentId}" aria-pressed="false">Preview</button>
-        <div class="composer-preview" data-preview-for="reply-${escapedParentId}"></div>
+        <button type="button" class="preview-toggle" data-preview-for="${replyTextareaId}" aria-controls="${replyPreviewId}" aria-pressed="false">Preview</button>
+        <div id="${replyPreviewId}" class="composer-preview" data-preview-for="${replyTextareaId}" role="status" aria-live="polite" aria-atomic="true"></div>
+        <p id="${replyStatusId}" class="form-status" role="status" aria-live="polite" aria-atomic="true"></p>
       </form>`;
 }
 
@@ -120,12 +129,12 @@ function renderChildren(
   if (renderDepth >= COLLAPSE_DEPTH) {
     return `      <details class="reply-branch" open>
         <summary>${children.length} nested ${children.length === 1 ? 'reply' : 'replies'}</summary>
-        <ol class="reply-list">
+        <ol class="reply-list" aria-label="Nested replies">
 ${rendered}
         </ol>
       </details>`;
   }
-  return `      <ol class="reply-list">
+  return `      <ol class="reply-list" aria-label="Replies">
 ${rendered}
       </ol>`;
 }
@@ -143,6 +152,7 @@ function renderCommentNode(
     : { content: node.content };
   const rendered = renderCommentContent(renderable, surface);
   const author = isDeletedComment(node) ? 'deleted' : node.authorActorId;
+  const commentLabel = `${surface === 'reply' ? 'Reply' : 'Comment'} by ${author}`;
   const replyTarget =
     !isDeletedComment(node) && node.replyToActorId !== null
       ? `        <p class="reply-target">Replying to <span>@${escapeText(node.replyToActorId)}</span></p>`
@@ -164,7 +174,7 @@ function renderCommentNode(
   }
   const parentId = node.parentId === null ? '' : escapeText(node.parentId);
   return `        <li class="comment-node depth-${Math.min(renderDepth, MAX_RENDER_DEPTH)}" data-comment-id="${escapeText(node.id)}" data-parent-id="${parentId}">
-      <article class="comment-card ${rendered.isTombstone ? 'is-tombstone' : ''}">
+      <article class="comment-card ${rendered.isTombstone ? 'is-tombstone' : ''}" aria-label="${escapeText(commentLabel)}">
         <header class="comment-meta">
           <span class="comment-author">${escapeText(author)}</span>
           ${isDeletedComment(node) ? `<time datetime="${escapeText(node.deletedAt)}">deleted ${escapeText(node.deletedAt)}</time>` : `<time datetime="${escapeText(node.createdAt)}">${escapeText(node.createdAt)}</time>`}
@@ -182,9 +192,9 @@ function renderConversation(
   postId: string,
 ): string {
   if (comments.length === 0) {
-    return '    <p class="conversation-empty">No comments yet. Start the conversation.</p>';
+    return '    <p class="conversation-empty" role="status">No comments yet. Start the conversation.</p>';
   }
-  return `    <ol class="comment-list">
+  return `    <ol class="comment-list" aria-label="Comments">
 ${comments.map((comment) => renderCommentNode(comment, postId, 0)).join('\n')}
     </ol>`;
 }
@@ -197,12 +207,12 @@ function renderConversationSection(input: {
   comments: CommentTreeNode[];
 }): string {
   const { post, totalCount, firstLevelCount, comments } = input;
-  return `  <section class="conversation" aria-live="polite">
-    <h2>Comments</h2>
-    <p class="counts">${totalCount} total ${totalCount === 1 ? 'comment/reply' : 'comments/replies'}; ${firstLevelCount} first-level ${firstLevelCount === 1 ? 'comment' : 'comments'}.</p>
+  return `  <section class="conversation" aria-labelledby="comments-heading" aria-describedby="conversation-counts" aria-live="polite" aria-busy="false">
+    <h2 id="comments-heading">Comments</h2>
+    <p id="conversation-counts" class="counts">${totalCount} total ${totalCount === 1 ? 'comment/reply' : 'comments/replies'}; ${firstLevelCount} first-level ${firstLevelCount === 1 ? 'comment' : 'comments'}.</p>
 ${renderCommentComposer(post.id)}
 ${renderConversation(comments, post.id)}
-    <p class="conversation-realtime-status" data-realtime-status="idle">Live comment updates stream when this browser supports EventSource.</p>
+    <p class="conversation-realtime-status" data-realtime-status="idle" role="status" aria-live="polite" aria-atomic="true">Live comment updates stream when this browser supports EventSource.</p>
   </section>`;
 }
 
@@ -330,6 +340,14 @@ function renderPostDetailRealtimeScript(postId: string): string {
           });
       }
       eventTypes.forEach(function (type) { source.addEventListener(type, refreshConversation); });
+      source.addEventListener('open', function () {
+        var status = document.querySelector('[data-realtime-status]');
+        if (status) status.textContent = 'Live updates connected.';
+      });
+      source.addEventListener('error', function () {
+        var status = document.querySelector('[data-realtime-status]');
+        if (status) status.textContent = 'Live updates reconnecting…';
+      });
     })();`;
 }
 
@@ -344,10 +362,10 @@ function renderPostDetailDocument(input: {
 }): string {
   const { post, totalCount, firstLevelCount, comments, principal } = input;
   const errorBlock = input.error
-    ? `    <p class="conversation-error" role="alert">${escapeText(input.error)}</p>`
+    ? `    <p class="conversation-error" role="alert" aria-live="assertive">${escapeText(input.error)}</p>`
     : '';
   const noticeBlock = input.notice
-    ? `    <p class="conversation-notice" role="status">${escapeText(input.notice)}</p>`
+    ? `    <p class="conversation-notice" role="status" aria-live="polite" aria-atomic="true">${escapeText(input.notice)}</p>`
     : '';
   return `<!doctype html>
 <html lang="en">
@@ -357,6 +375,9 @@ function renderPostDetailDocument(input: {
   <title>Conversation — Slack that Theo wants</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; color: #111; }
+    .skip-link { position: absolute; left: -999px; top: 0; padding: 0.5rem 0.75rem; background: #fff; border: 1px solid #111; border-radius: 4px; }
+    .skip-link:focus { left: 1rem; top: 1rem; z-index: 1000; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
     header.page-header { border-bottom: 1px solid #ddd; padding-bottom: 1rem; margin-bottom: 1rem; }
     .back-link, .counts { color: #555; font-size: 0.9rem; }
     .post-detail, .comment-card { border: 1px solid #e1e1e1; border-radius: 6px; padding: 0.75rem 1rem; margin-bottom: 1rem; }
@@ -366,6 +387,7 @@ function renderPostDetailDocument(input: {
     .comment-composer, .reply-composer { margin: 1rem 0; }
     textarea { width: 100%; min-height: 70px; box-sizing: border-box; padding: 0.5rem; font: inherit; }
     button { margin-top: 0.5rem; }
+    .form-help, .form-status { color: #555; font-size: 0.85rem; margin: 0.25rem 0 0.5rem; }
     .comment-list, .reply-list { list-style: none; padding-left: 0; }
     .reply-list, .reply-branch { margin-left: clamp(1rem, 4vw, 2rem); }
     .comment-node { margin: 0.75rem 0; }
@@ -380,11 +402,13 @@ ${CODE_BLOCK_CSS}
   </style>
 </head>
 <body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
   <header class="page-header">
-    <p class="back-link"><a href="/feed">← Back to feed</a></p>
+    <nav class="back-link" aria-label="Post detail navigation"><a href="/feed">← Back to feed</a></nav>
     <h1>Conversation</h1>
     <p class="principal">Signed in as <strong>${escapeText(principal.actorId)}</strong> in workspace <strong>${escapeText(principal.workspaceId)}</strong>.</p>
   </header>
+  <main id="main-content" tabindex="-1">
 ${errorBlock}
 ${noticeBlock}
 ${renderPostArticle(post)}
@@ -394,6 +418,7 @@ ${renderConversationSection({
     firstLevelCount,
     comments,
   })}
+  </main>
   <script>
 ${renderPostDetailRealtimeScript(post.id)}
 ${COPY_CODE_SCRIPT}
@@ -410,11 +435,20 @@ function renderErrorDocument(message: string, code: string): string {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Conversation — error</title>
-  <style>body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; color: #111; } .conversation-error { color: #b00; }</style>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; color: #111; }
+    .skip-link { position: absolute; left: -999px; top: 0; padding: 0.5rem 0.75rem; background: #fff; border: 1px solid #111; border-radius: 4px; }
+    .skip-link:focus { left: 1rem; top: 1rem; }
+    .conversation-error { color: #b00; }
+  </style>
 </head>
 <body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
   <header class="page-header"><h1>Conversation</h1></header>
-  <p class="conversation-error" role="alert">${escapeText(message)} (code: ${escapeText(code)})</p>
+  <main id="main-content" tabindex="-1">
+    <p class="conversation-error" role="alert" aria-live="assertive">${escapeText(message)} (code: ${escapeText(code)})</p>
+    <p><a href="/feed">Back to feed</a></p>
+  </main>
 </body>
 </html>`;
 }
@@ -561,16 +595,21 @@ export function postDetailRoutes(deps: PostDetailRouteDeps): Hono {
     }
 
     if (content === undefined || content.length === 0) {
-      return c.html(
-        renderCurrentState({
-          principal,
-          postId,
-          postService,
-          commentService,
-          error: 'content must be a non-empty string',
-        }),
-        400,
-      );
+      try {
+        return c.html(
+          renderCurrentState({
+            principal,
+            postId,
+            postService,
+            commentService,
+            error: 'content must be a non-empty string',
+          }),
+          400,
+        );
+      } catch (err) {
+        const mapped = mapConversationError(err);
+        return c.html(renderErrorDocument(mapped.message, mapped.code), mapped.status);
+      }
     }
 
     try {
@@ -594,7 +633,7 @@ export function postDetailRoutes(deps: PostDetailRouteDeps): Hono {
             postId,
             postService,
             commentService,
-            error: mapped.message,
+            error: `${mapped.code}: ${mapped.message}`,
           }),
           mapped.status,
         );
@@ -623,31 +662,41 @@ export function postDetailRoutes(deps: PostDetailRouteDeps): Hono {
     }
 
     if (content === undefined || content.length === 0) {
-      return c.html(
-        renderCurrentState({
-          principal,
-          postId,
-          postService,
-          commentService,
-          error: 'content must be a non-empty string',
-        }),
-        400,
-      );
-    }
-
-    try {
-      const parent = commentService.getComment({ principal, commentId: parentId });
-      if (parent.rootPostId !== postId) {
+      try {
         return c.html(
           renderCurrentState({
             principal,
             postId,
             postService,
             commentService,
-            error: 'reply parent does not belong to this post',
+            error: 'content must be a non-empty string',
           }),
-          409,
+          400,
         );
+      } catch (err) {
+        const mapped = mapConversationError(err);
+        return c.html(renderErrorDocument(mapped.message, mapped.code), mapped.status);
+      }
+    }
+
+    try {
+      const parent = commentService.getComment({ principal, commentId: parentId });
+      if (parent.rootPostId !== postId) {
+        try {
+          return c.html(
+            renderCurrentState({
+              principal,
+              postId,
+              postService,
+              commentService,
+              error: 'reply parent does not belong to this post',
+            }),
+            409,
+          );
+        } catch (err) {
+          const mapped = mapConversationError(err);
+          return c.html(renderErrorDocument(mapped.message, mapped.code), mapped.status);
+        }
       }
       commentService.createReply({ principal, parentId, content });
       return c.html(
@@ -669,7 +718,7 @@ export function postDetailRoutes(deps: PostDetailRouteDeps): Hono {
             postId,
             postService,
             commentService,
-            error: mapped.message,
+            error: `${mapped.code}: ${mapped.message}`,
           }),
           mapped.status,
         );

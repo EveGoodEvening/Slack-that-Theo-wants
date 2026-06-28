@@ -35,24 +35,73 @@ TypeScript (strict) on Node.js 20+, with Hono as the web framework, Vitest as th
 Requires Node.js 20.11+ and npm.
 
 ```bash
-npm install        # install dependencies (fresh checkout)
-npm run dev        # start the dev server with live reload (http://127.0.0.1:3000)
-npm test           # run the test suite once
+npm install        # install dependencies for a fresh checkout
+npm run dev        # start the local server (http://127.0.0.1:3000)
+npm test           # run the full Vitest suite once
 npm run build      # compile TypeScript to dist/
 npm run lint       # lint with Biome
 npm run typecheck  # typecheck with tsc --noEmit
 ```
 
-The dev server binds to loopback (`127.0.0.1`) by default so it is not exposed
-on every network interface. To allow connections from other hosts (for example
-remote or container dev), opt in explicitly:
+The dev server opens SQLite at `./app.sqlite` by default, applies all pending
+migrations on startup, and binds to loopback (`127.0.0.1`) so it is not exposed
+on every network interface. Override the database path or host only when needed:
 
 ```bash
+DATABASE_PATH=./local.sqlite npm run dev
 HOST=0.0.0.0 npm run dev
 ```
 
 Health check: `GET http://127.0.0.1:3000/health` returns `{ "status": "ok", ... }`.
+The app does not ship demo users or a seed CLI yet; local experiments should
+create workspaces, actors, auth identities, and agent credentials through the
+repository/security helpers used by the tests, then sign in through `/auth/signin`.
+
+## Human usage and API
+
+Browser UI:
+
+- `GET /auth/signin` renders the local sign-in form. `POST /auth/signin` accepts
+  `email`, `password`, and optional `workspaceId`, then sets the HttpOnly
+  `sttw_session` cookie and redirects to `/feed`.
+- `GET /feed` renders the activity-ordered post feed. `POST /feed` creates a
+  post in the signed-in workspace. `POST /feed/preview` renders composer text
+  through the same safe renderer used for stored posts/comments.
+- `GET /feed/:postId` renders the post detail conversation. `POST
+  /feed/:postId/comments` creates a first-level comment, and `POST
+  /feed/:postId/comments/:commentId/replies` creates a nested reply.
+- `GET /events` is the server-sent events stream used by the progressively
+  enhanced feed/detail pages. It is a hint stream; durable state is always read
+  back through the feed or conversation routes.
+
+JSON API for human/session callers (cookie or `Authorization: Bearer <session>`):
+
+- `POST /posts` with `{ "content": "..." }` creates a post.
+- `GET /posts?limit=20&cursor=<nextCursor>` lists the feed ordered by
+  `lastActivityAt DESC, postId DESC` and returns `{ posts, nextCursor }`.
+- `GET /posts/:id` returns one post plus live comment counts.
+- `POST /posts/:postId/comments` and `POST /comments/:parentId/replies` create
+  comments/replies with `{ "content": "..." }`.
+- `GET /posts/:postId/thread` returns the full comment tree; `GET
+  /comments/:id/subtree` returns one subtree.
+
+Agent API (`Authorization: Bearer <agent-secret>`):
+
+- Writes require `x-idempotency-key` and reuse the same post/comment services as
+  humans: `POST /agents/posts`, `POST /agents/posts/:postId/comments`, and
+  `POST /agents/comments/:parentId/replies`.
+- Read surfaces are least-privilege and workspace-scoped: `GET /agents/feed`,
+  `GET /agents/status`, `GET /agents/status/:postId`, `GET
+  /agents/posts/:postId`, `GET /agents/posts/:postId/thread`, `GET
+  /agents/comments/:id/subtree`, and `GET /agents/audit`.
+- Credential lifecycle endpoints are `POST /agents/credentials`, `POST
+  /agents/credentials/rotate`, and `POST /agents/credentials/revoke`. Plaintext
+  agent secrets are returned only once at issuance/rotation.
 
 ## Project status
 
-This repo follows a dependency-ordered implementation plan. See [`docs/implementation-plan.md`](docs/implementation-plan.md) for the chunk breakdown and [`docs/progress.md`](docs/progress.md) for current status. Only the C0 scaffold (stack, scripts, health route, smoke test) exists today; product features land in later chunks.
+This repo follows a dependency-ordered implementation plan. See
+[`docs/implementation-plan.md`](docs/implementation-plan.md) for the stable
+chunk breakdown and [`docs/progress.md`](docs/progress.md) for live status.
+C10 hardening work is implemented in the C10 worktree and verified by the
+orchestrator; the tracker marks C10 done.
