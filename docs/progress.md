@@ -40,7 +40,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
 | C5    | done         | Verified: npm install, test (171 tests), build, lint, typecheck |
 | C6    | done         | Verified: npm install, test (192 tests), build, lint, typecheck |
 | C7    | done         | Verified: npm install, test (240 tests), build, lint, typecheck |
-| C8    | done         | Verified: npm install, targeted C8 tests (31 tests), full test (246 tests), build, lint, typecheck after review fixes |
+| C8    | done         | Verified: npm install, targeted C8 tests (32 tests), full test (247 tests), build, lint, typecheck after review fixes |
 | C9    | not started  | Depends on C1a, C2, C3, C4, C7 |
 | C10   | not started  | Depends on all core flows |
 
@@ -157,7 +157,7 @@ Rules (mirrored from `docs/implementation-plan.md`):
 - [x] Filter realtime events by workspace/group membership via the C1a authorization middleware (no cross-workspace leakage) — `/events` resolves C1a principals and `ActivityEventHub` scopes fan-out by workspace; verified by orchestrator
 - [x] Implement live feed reordering so bumped posts move to the top without refresh — feed EventSource handler fetches server-rendered card fragments and inserts/replaces changed posts by `lastActivityAt` order; executable handler coverage added in `src/ui/feed.test.ts`; verified by orchestrator
 - [x] Implement live post-detail update for new comments/replies — post-detail EventSource handler fetches and swaps the conversation fragment for matching root posts; executable handler coverage added in `src/ui/postDetail.test.ts`; verified by orchestrator
-- [x] Add integration/E2E tests for the C8 contract — `src/api/activityRoutes.test.ts` covers emitted event types and workspace filtering; executable feed/detail EventSource handler tests cover feed card replacement/reordering, out-of-order fetch race ordering, post-detail matching comment/reply swaps, stale fragment race handling, and unrelated/root-mismatched no-ops; verified by orchestrator
+- [x] Add integration/E2E tests for the C8 contract — `src/api/activityRoutes.test.ts` covers emitted event types and workspace filtering; executable feed/detail EventSource handler tests cover feed card replacement/reordering, out-of-order fetch race ordering, post-detail matching comment/reply swaps, stale fragment race handling, draft preservation, and unrelated/root-mismatched no-ops; verified by orchestrator
 
 ## C9 — Auth, workspace boundaries, collaboration base
 
@@ -390,3 +390,12 @@ Rules (mirrored from `docs/implementation-plan.md`):
   tests (`npm test -- src/api/activityRoutes.test.ts src/ui/feed.test.ts
   src/ui/postDetail.test.ts`, 31 tests), full `npm test` (246 tests),
   `npm run build`, `npm run lint`, and `npm run typecheck`. C8 is `done`.
+- 2026-06-28 — Chunk C8: draft-preservation review blocker fixed in
+  `/root/gitfiles/Slack-that-Theo-wants-C8` — Post-detail realtime refresh now
+  preserves top-level and nested reply composer drafts/listeners/focus while
+  swapping conversation fragments. Added executable handler coverage for draft
+  preservation and lint-compliant fake DOM parsing. Orchestrator verified
+  targeted C8 tests (`npm test -- src/api/activityRoutes.test.ts
+  src/ui/feed.test.ts src/ui/postDetail.test.ts`, 32 tests), full `npm test`
+  (247 tests), `npm run build`, `npm run lint`, and `npm run typecheck`.
+  C8 is `done`.

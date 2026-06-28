@@ -241,6 +241,77 @@ function renderPostDetailRealtimeScript(postId: string, principal: Principal): s
         if (payload && typeof payload.rootPostLastActivityAt === 'string') return payload.rootPostLastActivityAt;
         return null;
       }
+      function composerTextareas(root) {
+        if (!root || !root.querySelectorAll) return [];
+        return Array.prototype.slice.call(root.querySelectorAll('textarea'));
+      }
+      function composerForm(textarea) {
+        return textarea && textarea.closest ? textarea.closest('form') : null;
+      }
+      function isConversationComposer(form) {
+        var classes = ' ' + ((form && form.getAttribute('class')) || '') + ' ';
+        return classes.indexOf(' comment-composer ') >= 0 || classes.indexOf(' reply-composer ') >= 0;
+      }
+      function composerKey(textarea) {
+        if (!textarea || textarea.getAttribute('name') !== 'content') return null;
+        var form = composerForm(textarea);
+        if (!form || !isConversationComposer(form)) return null;
+        var id = textarea.getAttribute('id');
+        if (id) return 'id:' + id;
+        var action = form.getAttribute('action');
+        return action ? 'action:' + action : null;
+      }
+      function captureComposers(current) {
+        var captured = Object.create(null);
+        var active = document.activeElement || null;
+        composerTextareas(current).forEach(function (textarea) {
+          var key = composerKey(textarea);
+          if (!key) return;
+          var form = composerForm(textarea);
+          if (!form) return;
+          captured[key] = {
+            form: form,
+            textarea: textarea,
+            value: typeof textarea.value === 'string' ? textarea.value : '',
+            wasFocused: textarea === active,
+            selectionStart: typeof textarea.selectionStart === 'number' ? textarea.selectionStart : null,
+            selectionEnd: typeof textarea.selectionEnd === 'number' ? textarea.selectionEnd : null,
+            selectionDirection: typeof textarea.selectionDirection === 'string' ? textarea.selectionDirection : 'none'
+          };
+        });
+        return captured;
+      }
+      function moveCapturedComposers(next, captured) {
+        var activeState = null;
+        composerTextareas(next).forEach(function (textarea) {
+          var key = composerKey(textarea);
+          var state = key ? captured[key] : null;
+          if (!state) return;
+          var nextForm = composerForm(textarea);
+          if (!nextForm) return;
+          state.textarea.value = state.value;
+          if (nextForm !== state.form) nextForm.replaceWith(state.form);
+          if (state.wasFocused) activeState = state;
+        });
+        return activeState;
+      }
+      function restoreComposerFocus(state) {
+        if (!state || !state.textarea || typeof state.textarea.focus !== 'function') return;
+        state.textarea.focus();
+        if (
+          typeof state.textarea.setSelectionRange === 'function' &&
+          state.selectionStart !== null &&
+          state.selectionEnd !== null
+        ) {
+          try {
+            state.textarea.setSelectionRange(
+              state.selectionStart,
+              state.selectionEnd,
+              state.selectionDirection || 'none',
+            );
+          } catch (_) {}
+        }
+      }
       function refreshConversation(message) {
         var payload;
         try { payload = JSON.parse(message.data); } catch (_) { return; }
@@ -262,7 +333,11 @@ function renderPostDetailRealtimeScript(postId: string, principal: Principal): s
             template.innerHTML = html.trim();
             var next = template.content.firstElementChild;
             var current = document.querySelector('.conversation');
-            if (next && current) current.replaceWith(next);
+            if (next && current) {
+              var activeComposer = moveCapturedComposers(next, captureComposers(current));
+              current.replaceWith(next);
+              restoreComposerFocus(activeComposer);
+            }
           })
           .catch(function () {
             if (refreshToken !== latestRefreshToken) return;

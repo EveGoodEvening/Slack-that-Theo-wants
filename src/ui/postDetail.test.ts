@@ -627,12 +627,25 @@ class PostDetailRealtimeElement {
   readonly attributes = new Map<string, string>();
   readonly children: PostDetailRealtimeElement[] = [];
   parent: PostDetailRealtimeElement | null = null;
+  ownerDocument: PostDetailRealtimeDocument | null = null;
   textContent = '';
+  value = '';
+  selectionStart: number | null = null;
+  selectionEnd: number | null = null;
+  selectionDirection: 'forward' | 'backward' | 'none' = 'none';
   private html = '';
+  private readonly domListeners = new Map<string, Array<() => void>>();
 
-  constructor(tagName: string, attrs: Record<string, string> = {}, html = '') {
+  constructor(
+    tagName: string,
+    attrs: Record<string, string> = {},
+    html = '',
+    ownerDocument: PostDetailRealtimeDocument | null = null,
+  ) {
     this.tagName = tagName.toLowerCase();
     this.html = html;
+    this.ownerDocument = ownerDocument;
+    if (this.tagName === 'textarea') this.value = decodeHtmlEntities(html);
     for (const [name, value] of Object.entries(attrs)) {
       this.attributes.set(name, value);
     }
@@ -649,6 +662,7 @@ class PostDetailRealtimeElement {
   appendChild(child: PostDetailRealtimeElement): void {
     if (child.parent) child.parent.removeChild(child);
     child.parent = this;
+    child.setOwnerDocument(this.ownerDocument);
     this.children.push(child);
   }
 
@@ -665,6 +679,7 @@ class PostDetailRealtimeElement {
     const index = parent.children.indexOf(this);
     if (index < 0) return;
     next.parent = parent;
+    next.setOwnerDocument(parent.ownerDocument);
     parent.children[index] = next;
     this.parent = null;
   }
@@ -674,25 +689,157 @@ class PostDetailRealtimeElement {
   }
 
   querySelector(selector: string): PostDetailRealtimeElement | null {
+    return this.querySelectorAll(selector)[0] ?? null;
+  }
+
+  querySelectorAll(selector: string): PostDetailRealtimeElement[] {
+    const matches: PostDetailRealtimeElement[] = [];
     for (const child of this.children) {
-      if (child.matches(selector)) return child;
-      const nested = child.querySelector(selector);
-      if (nested) return nested;
+      if (child.matches(selector)) matches.push(child);
+      matches.push(...child.querySelectorAll(selector));
+    }
+    return matches;
+  }
+
+  closest(selector: string): PostDetailRealtimeElement | null {
+    let current: PostDetailRealtimeElement | null = this;
+    while (current) {
+      if (current.matches(selector)) return current;
+      current = current.parent;
     }
     return null;
   }
 
   matches(selector: string): boolean {
-    if (selector === '.conversation') return this.hasClass('conversation');
-    if (selector === '[data-realtime-status]') {
-      return this.getAttribute('data-realtime-status') !== null;
+    if (selector.startsWith('#')) return this.getAttribute('id') === selector.slice(1);
+
+    const classAttrMatch = /^\.([A-Za-z0-9_-]+)\[([^=\]]+)(?:="([^"]*)")?\]$/.exec(selector);
+    if (classAttrMatch) {
+      const className = classAttrMatch[1];
+      const attrName = classAttrMatch[2];
+      if (className === undefined || attrName === undefined) return false;
+      const attrValue = classAttrMatch[3];
+      if (!this.hasClass(className)) return false;
+      const actual = this.getAttribute(attrName);
+      return attrValue === undefined ? actual !== null : actual === attrValue;
     }
+
+    if (selector.startsWith('.')) return this.hasClass(selector.slice(1));
+    if (selector === this.tagName) return true;
+
+    const attrMatch = /^([A-Za-z0-9_-]+)?\[([^=\]]+)(?:="([^"]*)")?\]$/.exec(selector);
+    if (attrMatch) {
+      const tagName = attrMatch[1];
+      const attrName = attrMatch[2];
+      if (attrName === undefined) return false;
+      const attrValue = attrMatch[3];
+      if (tagName && tagName.toLowerCase() !== this.tagName) return false;
+      const actual = this.getAttribute(attrName);
+      return attrValue === undefined ? actual !== null : actual === attrValue;
+    }
+
     return false;
+  }
+
+  addEventListener(type: string, listener: () => void): void {
+    const listeners = this.domListeners.get(type) ?? [];
+    listeners.push(listener);
+    this.domListeners.set(type, listeners);
+  }
+
+  click(): void {
+    for (const listener of this.domListeners.get('click') ?? []) listener();
+  }
+
+  focus(): void {
+    if (this.ownerDocument) this.ownerDocument.activeElement = this;
+  }
+
+  setSelectionRange(
+    selectionStart: number,
+    selectionEnd: number,
+    selectionDirection: 'forward' | 'backward' | 'none' = 'none',
+  ): void {
+    this.selectionStart = selectionStart;
+    this.selectionEnd = selectionEnd;
+    this.selectionDirection = selectionDirection;
   }
 
   private hasClass(className: string): boolean {
     return (this.getAttribute('class') ?? '').split(/\s+/).includes(className);
   }
+
+  private setOwnerDocument(ownerDocument: PostDetailRealtimeDocument | null): void {
+    this.ownerDocument = ownerDocument;
+    for (const child of this.children) child.setOwnerDocument(ownerDocument);
+  }
+}
+
+function parsePostDetailRealtimeAttributes(source: string): Record<string, string> {
+  const attrs: Record<string, string> = {};
+  const attrPattern = /([A-Za-z_:][-A-Za-z0-9_:.]*)="([^"]*)"/g;
+  for (let match = attrPattern.exec(source); match !== null; match = attrPattern.exec(source)) {
+    const name = match[1];
+    const value = match[2];
+    if (name !== undefined && value !== undefined) {
+      attrs[name] = decodeHtmlEntities(value);
+    }
+  }
+  return attrs;
+}
+
+function parsePostDetailRealtimeConversation(
+  html: string,
+  ownerDocument: PostDetailRealtimeDocument | null,
+): PostDetailRealtimeElement | null {
+  if (!/class="[^"]*conversation[^"]*"/.test(html)) return null;
+  const section = new PostDetailRealtimeElement(
+    'section',
+    { class: 'conversation' },
+    html,
+    ownerDocument,
+  );
+  const formPattern = /<form\b([^>]*)>([\s\S]*?)<\/form>/g;
+  for (let formMatch = formPattern.exec(html); formMatch !== null; formMatch = formPattern.exec(html)) {
+    const formAttrs = formMatch[1] ?? '';
+    const formHtml = formMatch[2] ?? '';
+    const form = new PostDetailRealtimeElement(
+      'form',
+      parsePostDetailRealtimeAttributes(formAttrs),
+      formMatch[0] ?? '',
+      ownerDocument,
+    );
+
+    const textareaPattern = /<textarea\b([^>]*)>([\s\S]*?)<\/textarea>/g;
+    for (let textareaMatch = textareaPattern.exec(formHtml); textareaMatch !== null; textareaMatch = textareaPattern.exec(formHtml)) {
+      const textareaAttrs = textareaMatch[1] ?? '';
+      const textareaHtml = textareaMatch[2] ?? '';
+      const textarea = new PostDetailRealtimeElement(
+        'textarea',
+        parsePostDetailRealtimeAttributes(textareaAttrs),
+        textareaHtml,
+        ownerDocument,
+      );
+      form.appendChild(textarea);
+    }
+
+    const buttonPattern = /<button\b([^>]*)>([\s\S]*?)<\/button>/g;
+    for (let buttonMatch = buttonPattern.exec(formHtml); buttonMatch !== null; buttonMatch = buttonPattern.exec(formHtml)) {
+      const buttonAttrs = buttonMatch[1] ?? '';
+      const buttonHtml = buttonMatch[2] ?? '';
+      const button = new PostDetailRealtimeElement(
+        'button',
+        parsePostDetailRealtimeAttributes(buttonAttrs),
+        buttonHtml,
+        ownerDocument,
+      );
+      button.textContent = stripTags(buttonHtml);
+      form.appendChild(button);
+    }
+
+    section.appendChild(form);
+  }
+  return section;
 }
 
 class PostDetailRealtimeTemplateElement extends PostDetailRealtimeElement {
@@ -700,8 +847,8 @@ class PostDetailRealtimeTemplateElement extends PostDetailRealtimeElement {
     firstElementChild: null,
   };
 
-  constructor() {
-    super('template');
+  constructor(ownerDocument: PostDetailRealtimeDocument | null) {
+    super('template', {}, '', ownerDocument);
   }
 
   override get innerHTML(): string {
@@ -710,36 +857,66 @@ class PostDetailRealtimeTemplateElement extends PostDetailRealtimeElement {
 
   override set innerHTML(value: string) {
     super.innerHTML = value;
-    this.content.firstElementChild = /class="[^"]*conversation[^"]*"/.test(value)
-      ? new PostDetailRealtimeElement('section', { class: 'conversation' }, value)
-      : null;
+    this.content.firstElementChild = parsePostDetailRealtimeConversation(
+      value,
+      this.ownerDocument,
+    );
   }
 }
 
 class PostDetailRealtimeDocument {
-  readonly root = new PostDetailRealtimeElement('main');
-  readonly status = new PostDetailRealtimeElement('p', { 'data-realtime-status': 'idle' });
+  readonly root: PostDetailRealtimeElement;
+  readonly status: PostDetailRealtimeElement;
+  activeElement: PostDetailRealtimeElement | null = null;
 
   constructor() {
+    this.root = new PostDetailRealtimeElement('main', {}, '', this);
+    this.status = new PostDetailRealtimeElement(
+      'p',
+      { 'data-realtime-status': 'idle' },
+      '',
+      this,
+    );
     this.root.appendChild(
       new PostDetailRealtimeElement(
         'section',
         { class: 'conversation' },
         '<section class="conversation">stale conversation</section>',
+        this,
       ),
     );
   }
 
   querySelector(selector: string): PostDetailRealtimeElement | null {
-    if (selector === '[data-realtime-status]') return this.status;
+    if (this.status.matches(selector)) return this.status;
+    if (this.root.matches(selector)) return this.root;
     return this.root.querySelector(selector);
+  }
+
+  querySelectorAll(selector: string): PostDetailRealtimeElement[] {
+    const matches = this.root.matches(selector) ? [this.root] : [];
+    matches.push(...this.root.querySelectorAll(selector));
+    if (this.status.matches(selector)) matches.push(this.status);
+    return matches;
+  }
+
+  getElementById(id: string): PostDetailRealtimeElement | null {
+    const visit = (element: PostDetailRealtimeElement): PostDetailRealtimeElement | null => {
+      if (element.getAttribute('id') === id) return element;
+      for (const child of element.children) {
+        const found = visit(child);
+        if (found) return found;
+      }
+      return null;
+    };
+    return visit(this.root);
   }
 
   createElement(tagName: string): PostDetailRealtimeElement {
     if (tagName.toLowerCase() === 'template') {
-      return new PostDetailRealtimeTemplateElement();
+      return new PostDetailRealtimeTemplateElement(this);
     }
-    return new PostDetailRealtimeElement(tagName);
+    return new PostDetailRealtimeElement(tagName, {}, '', this);
   }
 
   conversation(): PostDetailRealtimeElement {
@@ -748,6 +925,44 @@ class PostDetailRealtimeDocument {
     if (conversation === null) throw new Error('expected conversation element');
     return conversation;
   }
+}
+
+function appendPostDetailRealtimeComposer(
+  document: PostDetailRealtimeDocument,
+  formClass: 'comment-composer' | 'reply-composer',
+  textareaId: string,
+): {
+  form: PostDetailRealtimeElement;
+  textarea: PostDetailRealtimeElement;
+  button: PostDetailRealtimeElement;
+} {
+  const form = new PostDetailRealtimeElement('form', { class: formClass }, '', document);
+  const textarea = new PostDetailRealtimeElement(
+    'textarea',
+    { id: textareaId, name: 'content' },
+    '',
+    document,
+  );
+  const button = new PostDetailRealtimeElement(
+    'button',
+    { type: 'button', class: 'preview-toggle', 'data-preview-for': textareaId },
+    'Preview',
+    document,
+  );
+  form.appendChild(textarea);
+  form.appendChild(button);
+  document.conversation().appendChild(form);
+  return { form, textarea, button };
+}
+
+function requirePostDetailRealtimeElement(
+  document: PostDetailRealtimeDocument,
+  id: string,
+): PostDetailRealtimeElement {
+  const element = document.getElementById(id);
+  expect(element).not.toBeNull();
+  if (element === null) throw new Error(`expected element ${id}`);
+  return element;
 }
 
 function extractPostDetailRealtimeScript(html: string): string {
@@ -890,6 +1105,105 @@ describe('C8 post detail realtime progressive enhancement', () => {
     const afterReply = document.conversation();
     expect(afterReply).not.toBe(afterComment);
     expect(afterReply.innerHTML).toContain('nested realtime reply');
+  });
+
+  it('preserves top-level and nested composer drafts across a matching realtime refresh', async () => {
+    const { workspace, ada, bo } = workspaceFixture();
+    seedPost(
+      'post1',
+      workspace.id,
+      ada.id,
+      'Realtime draft preservation post',
+      '2024-01-01T00:00:00.000Z',
+    );
+    seedComment({
+      id: 'comment-draft-parent',
+      workspaceId: workspace.id,
+      rootPostId: 'post1',
+      authorActorId: bo.id,
+      content: 'reply target while drafting',
+      createdAt: '2024-01-02T00:00:00.000Z',
+    });
+    const a = app();
+
+    const detail = await getPostDetail(a, 'post1', ada.id, workspace.id);
+    expect(detail.status).toBe(200);
+
+    const script = extractPostDetailRealtimeScript(detail.html);
+    const document = new PostDetailRealtimeDocument();
+    const topComposer = appendPostDetailRealtimeComposer(
+      document,
+      'comment-composer',
+      'new-comment',
+    );
+    const replyTextareaId = 'reply-comment-draft-parent';
+    const replyComposer = appendPostDetailRealtimeComposer(
+      document,
+      'reply-composer',
+      replyTextareaId,
+    );
+    topComposer.textarea.value = 'unsent top-level comment draft';
+    replyComposer.textarea.value = 'unsent nested reply draft';
+    replyComposer.textarea.focus();
+    replyComposer.textarea.setSelectionRange(7, 13, 'forward');
+
+    let topPreviewClicks = 0;
+    let replyPreviewClicks = 0;
+    topComposer.button.addEventListener('click', () => {
+      topPreviewClicks += 1;
+    });
+    replyComposer.button.addEventListener('click', () => {
+      replyPreviewClicks += 1;
+    });
+
+    const fetches = installPostDetailRealtimeGlobals(document, async (url) => {
+      const res = await a.request(url);
+      return { ok: res.status === 200, text: () => res.text() };
+    });
+
+    Function(script)();
+    const source = currentPostDetailEventSource();
+
+    seedComment({
+      id: 'comment-arrived-while-drafting',
+      workspaceId: workspace.id,
+      rootPostId: 'post1',
+      authorActorId: ada.id,
+      content: 'arrived while drafting',
+      createdAt: '2024-01-03T00:00:00.000Z',
+    });
+    source.emit(ACTIVITY_EVENT_TYPES.commentCreated, {
+      rootPostId: 'post1',
+      rootPostLastActivityAt: '2024-01-03T00:00:00.000Z',
+    });
+    await flushPromises();
+
+    const fragmentUrl = '/feed/post1/fragments/conversation?actorId=ada&workspaceId=wsA';
+    expect(fetches).toEqual([fragmentUrl]);
+    expect(document.conversation().innerHTML).toContain('arrived while drafting');
+
+    const topAfter = requirePostDetailRealtimeElement(document, 'new-comment');
+    const replyAfter = requirePostDetailRealtimeElement(document, replyTextareaId);
+    expect(topAfter).toBe(topComposer.textarea);
+    expect(replyAfter).toBe(replyComposer.textarea);
+    expect(topAfter.value).toBe('unsent top-level comment draft');
+    expect(replyAfter.value).toBe('unsent nested reply draft');
+    expect(document.activeElement).toBe(replyComposer.textarea);
+    expect(replyAfter.selectionStart).toBe(7);
+    expect(replyAfter.selectionEnd).toBe(13);
+    expect(replyAfter.selectionDirection).toBe('forward');
+
+    const topButtonAfter = topAfter.closest('form')?.querySelector('button');
+    const replyButtonAfter = replyAfter.closest('form')?.querySelector('button');
+    expect(topButtonAfter).toBe(topComposer.button);
+    expect(replyButtonAfter).toBe(replyComposer.button);
+    if (!topButtonAfter || !replyButtonAfter) {
+      throw new Error('expected preserved composer buttons');
+    }
+    topButtonAfter.click();
+    replyButtonAfter.click();
+    expect(topPreviewClicks).toBe(1);
+    expect(replyPreviewClicks).toBe(1);
   });
 
   it('ignores a stale conversation fragment when matching post-detail fetches resolve out of order', async () => {
